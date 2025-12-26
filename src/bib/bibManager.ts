@@ -169,7 +169,7 @@ export class BibManager {
   engine: any;
 
   zCitekeyToLinks: Map<string, string> = new Map();
-  zCitekeyToPDFLinks: Map<string, string[]> = new Map();
+  zCitekeyToAttachmentLinks: Map<string, string[]> = new Map();
 
   watcherCache: Map<string, FSWatcher> = new Map();
 
@@ -868,12 +868,12 @@ export class BibManager {
               if (item.attachments?.length) {
                 const attLinks: string[] = [];
                 for (const att of item.attachments) {
-                  if (/\.pdf$/.test(att.path)) {
+                  if (/\.(pdf|epub)$/i.test(att.path)) {
                     attLinks.push(att.path);
                   }
                 }
                 if (attLinks.length) {
-                  this.zCitekeyToPDFLinks.set(key, attLinks);
+                  this.zCitekeyToAttachmentLinks.set(key, attLinks);
                 }
               }
             }
@@ -917,7 +917,6 @@ export class BibManager {
 
       if (e.dataset.citekey) {
         const zLink = this.zCitekeyToLinks.get(e.dataset.citekey);
-        const zPDFLinks = this.zCitekeyToPDFLinks.get(e.dataset.citekey) || [];
         let linkText = '@' + e.dataset.citekey;
         let linkDest = app.metadataCache.getFirstLinkpathDest(
           linkText,
@@ -932,10 +931,11 @@ export class BibManager {
         }
 
         const entry = cache.get(e.dataset.citekey);
-        const localPDFLinks = this.parseBibFileField(entry?.file);
-        const allPDFLinks = [...new Set([...zPDFLinks, ...localPDFLinks])];
+        const zAttachmentLinks = this.zCitekeyToAttachmentLinks.get(e.dataset.citekey) || [];
+        const localAttachmentLinks = this.parseBibFileField(entry?.file);
+        const allAttachmentLinks = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
 
-        if (!linkDest && !zLink && !allPDFLinks.length) return;
+        if (!linkDest && !zLink && !allAttachmentLinks.length) return;
 
         div.createDiv({ cls: 'pwc-entry-btns' }, (div) => {
           if (linkDest) {
@@ -958,14 +958,15 @@ export class BibManager {
             });
           }
 
-          if (allPDFLinks.length) {
-            allPDFLinks.forEach((link) => {
+          if (allAttachmentLinks.length) {
+            allAttachmentLinks.forEach((link) => {
               if (existsSync(link)) {
                 div.createDiv('clickable-icon', (div) => {
-                  setIcon(div, 'lucide-file-text');
+                  const isPDF = link.toLowerCase().endsWith('.pdf');
+                  setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
                   div.setAttr(
                     'aria-label',
-                    t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || 'PDF')
+                    t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : 'EPUB'))
                   );
                   div.onClickEvent(async () => {
                     const vaultRoot = getVaultRoot();
@@ -985,30 +986,32 @@ export class BibManager {
                         const leaf = app.workspace.getRightLeaf(false);
                         await leaf.openFile(tfile);
                         
-                        // Attempt to enable annotation mode and show tools
-                        setTimeout(() => {
-                          const view = leaf.view as any;
-                          if (view.type === 'pdf') {
-                            if (view.viewer) {
-                              if (view.viewer.then) {
-                                view.viewer.then((v: any) => {
-                                  if (v && v.setAnnotationMode) v.setAnnotationMode(true);
-                                });
-                              } else if (view.viewer.setAnnotationMode) {
-                                view.viewer.setAnnotationMode(true);
+                        if (isPDF) {
+                          // Attempt to enable annotation mode and show tools
+                          setTimeout(() => {
+                            const view = leaf.view as any;
+                            if (view.type === 'pdf') {
+                              if (view.viewer) {
+                                if (view.viewer.then) {
+                                  view.viewer.then((v: any) => {
+                                    if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+                                  });
+                                } else if (view.viewer.setAnnotationMode) {
+                                  view.viewer.setAnnotationMode(true);
+                                }
+                              }
+                              
+                              const toolbar = view.contentEl.querySelector('.pdf-toolbar');
+                              if (toolbar) {
+                                toolbar.style.display = 'flex';
+                                const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
+                                if (annotateBtn && !annotateBtn.hasClass('is-active')) {
+                                  annotateBtn.click();
+                                }
                               }
                             }
-                            
-                            const toolbar = view.contentEl.querySelector('.pdf-toolbar');
-                            if (toolbar) {
-                              toolbar.style.display = 'flex';
-                              const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
-                              if (annotateBtn && !annotateBtn.hasClass('is-active')) {
-                                annotateBtn.click();
-                              }
-                            }
-                          }
-                        }, 1000);
+                          }, 1000);
+                        }
 
                         app.workspace.revealLeaf(leaf);
                         return;
@@ -1016,7 +1019,7 @@ export class BibManager {
                     }
 
                     // For external files, use virtual link (symlink) to open in Obsidian
-                    await this.openExternalPDFInternal(link);
+                    await this.openExternalFileInternal(link);
                   });
                 });
               }
@@ -1029,7 +1032,7 @@ export class BibManager {
     return parsed;
   }
 
-  async openExternalPDFInternal(link: string) {
+  async openExternalFileInternal(link: string) {
     const vaultRoot = getVaultRoot();
     const linksDirName = '_bib-links';
     const linksDir = path.join(vaultRoot, linksDirName);
@@ -1038,7 +1041,8 @@ export class BibManager {
     }
 
     const hash = crypto.createHash('md5').update(link).digest('hex');
-    const fileName = `${path.parse(link).name}_${hash.slice(0, 8)}.pdf`;
+    const ext = path.extname(link);
+    const fileName = `${path.parse(link).name}_${hash.slice(0, 8)}${ext}`;
     const linkPath = path.join(linksDir, fileName);
 
     if (!existsSync(linkPath)) {
@@ -1065,32 +1069,34 @@ export class BibManager {
       const leaf = app.workspace.getRightLeaf(false);
       await leaf.openFile(tfile);
       
-      // Attempt to enable annotation mode and show tools
-      setTimeout(() => {
-        const view = leaf.view as any;
-        if (view.type === 'pdf') {
-          // 1. Try internal API
-          if (view.viewer) {
-            if (view.viewer.then) {
-              view.viewer.then((v: any) => {
-                if (v && v.setAnnotationMode) v.setAnnotationMode(true);
-              });
-            } else if (view.viewer.setAnnotationMode) {
-              view.viewer.setAnnotationMode(true);
+      if (ext.toLowerCase() === '.pdf') {
+        // Attempt to enable annotation mode and show tools
+        setTimeout(() => {
+          const view = leaf.view as any;
+          if (view.type === 'pdf') {
+            // 1. Try internal API
+            if (view.viewer) {
+              if (view.viewer.then) {
+                view.viewer.then((v: any) => {
+                  if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+                });
+              } else if (view.viewer.setAnnotationMode) {
+                view.viewer.setAnnotationMode(true);
+              }
+            }
+            
+            // 2. Force toolbar visibility via DOM
+            const toolbar = view.contentEl.querySelector('.pdf-toolbar');
+            if (toolbar) {
+              toolbar.style.display = 'flex';
+              const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
+              if (annotateBtn && !annotateBtn.hasClass('is-active')) {
+                annotateBtn.click();
+              }
             }
           }
-          
-          // 2. Force toolbar visibility via DOM
-          const toolbar = view.contentEl.querySelector('.pdf-toolbar');
-          if (toolbar) {
-            toolbar.style.display = 'flex';
-            const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
-            if (annotateBtn && !annotateBtn.hasClass('is-active')) {
-              annotateBtn.click();
-            }
-          }
-        }
-      }, 1000);
+        }, 1000);
+      }
 
       app.workspace.revealLeaf(leaf);
     } else {
@@ -1120,7 +1126,10 @@ export class BibManager {
         }
       }
     }
-    return paths.filter((p) => p.toLowerCase().endsWith('.pdf'));
+    return paths.filter((p) => {
+      const ext = p.toLowerCase();
+      return ext.endsWith('.pdf') || ext.endsWith('.epub');
+    });
   }
 
   dispatchResult(file: TFile, result: FileCache) {
