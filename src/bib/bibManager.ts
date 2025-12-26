@@ -985,19 +985,30 @@ export class BibManager {
                         const leaf = app.workspace.getRightLeaf(false);
                         await leaf.openFile(tfile);
                         
-                        // Attempt to enable annotation mode automatically
+                        // Attempt to enable annotation mode and show tools
                         setTimeout(() => {
                           const view = leaf.view as any;
-                          if (view.type === 'pdf' && view.viewer) {
-                            if (view.viewer.then) {
-                              view.viewer.then((v: any) => {
-                                if (v && v.setAnnotationMode) v.setAnnotationMode(true);
-                              });
-                            } else if (view.viewer.setAnnotationMode) {
-                              view.viewer.setAnnotationMode(true);
+                          if (view.type === 'pdf') {
+                            if (view.viewer) {
+                              if (view.viewer.then) {
+                                view.viewer.then((v: any) => {
+                                  if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+                                });
+                              } else if (view.viewer.setAnnotationMode) {
+                                view.viewer.setAnnotationMode(true);
+                              }
+                            }
+                            
+                            const toolbar = view.contentEl.querySelector('.pdf-toolbar');
+                            if (toolbar) {
+                              toolbar.style.display = 'flex';
+                              const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
+                              if (annotateBtn && !annotateBtn.hasClass('is-active')) {
+                                annotateBtn.click();
+                              }
                             }
                           }
-                        }, 500);
+                        }, 1000);
 
                         app.workspace.revealLeaf(leaf);
                         return;
@@ -1054,22 +1065,32 @@ export class BibManager {
       const leaf = app.workspace.getRightLeaf(false);
       await leaf.openFile(tfile);
       
-      // Attempt to enable annotation mode automatically
+      // Attempt to enable annotation mode and show tools
       setTimeout(() => {
         const view = leaf.view as any;
-        if (view.type === 'pdf' && view.viewer) {
-          // This is the internal way to enable annotation mode in Obsidian's PDF viewer
-          if (view.viewer.then) {
-            view.viewer.then((v: any) => {
-              if (v && v.setAnnotationMode) {
-                v.setAnnotationMode(true);
-              }
-            });
-          } else if (view.viewer.setAnnotationMode) {
-            view.viewer.setAnnotationMode(true);
+        if (view.type === 'pdf') {
+          // 1. Try internal API
+          if (view.viewer) {
+            if (view.viewer.then) {
+              view.viewer.then((v: any) => {
+                if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+              });
+            } else if (view.viewer.setAnnotationMode) {
+              view.viewer.setAnnotationMode(true);
+            }
+          }
+          
+          // 2. Force toolbar visibility via DOM
+          const toolbar = view.contentEl.querySelector('.pdf-toolbar');
+          if (toolbar) {
+            toolbar.style.display = 'flex';
+            const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
+            if (annotateBtn && !annotateBtn.hasClass('is-active')) {
+              annotateBtn.click();
+            }
           }
         }
-      }, 500);
+      }, 1000);
 
       app.workspace.revealLeaf(leaf);
     } else {
