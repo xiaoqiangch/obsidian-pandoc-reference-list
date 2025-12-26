@@ -7,6 +7,7 @@ import {
   debounce,
   setIcon,
   TFile,
+  Notice,
 } from 'obsidian';
 import which from 'which';
 
@@ -25,7 +26,7 @@ import {
 } from './settings';
 import { TooltipManager } from './tooltip';
 import { ReferenceListView, viewType } from './view';
-import { PromiseCapability, fixPath, getVaultRoot } from './helpers';
+import { PromiseCapability, fixPath, getVaultRoot, debugLog } from './helpers';
 import path from 'path';
 import { BibManager } from './bib/bibManager';
 import { CiteSuggest } from './citeSuggest/citeSuggest';
@@ -38,6 +39,7 @@ export default class ReferenceList extends Plugin {
   cacheDir: string;
   bibManager: BibManager;
   _initPromise: PromiseCapability<void>;
+  lastActiveFile: TFile | null = null;
 
   get initPromise() {
     if (!this._initPromise) {
@@ -47,11 +49,14 @@ export default class ReferenceList extends Plugin {
   }
 
   async onload() {
-    console.log('ReferenceList: loading plugin');
+    debugLog('Main', 'onload started');
     const { app } = this;
 
     await this.loadSettings();
-    console.log('ReferenceList: settings loaded', this.settings);
+    debugLog('Main', 'settings loaded', this.settings);
+
+    this.initPromise.resolve();
+    debugLog('Main', 'initPromise resolved');
 
     this.registerView(
       viewType,
@@ -63,17 +68,34 @@ export default class ReferenceList extends Plugin {
     this.bibManager = new BibManager(this);
     this.initPromise.promise
       .then(() => {
-        console.log('ReferenceList: initPromise resolved, loading bib files');
+        debugLog('Main', 'initPromise.then started');
         if (this.settings.pullFromZotero) {
+          debugLog('Main', 'pulling from Zotero');
           return this.bibManager.loadAndRefreshGlobalZBib();
         } else {
+          debugLog('Main', 'loading global bib file');
           return this.bibManager.loadGlobalBibFile();
         }
       })
+      .then(() => {
+        debugLog('Main', 'bib files loaded successfully');
+      })
+      .catch((e) => {
+        debugLog('Main', 'error during bib initialization', e);
+        new Notice(`${t('Error rendering bibliography.')}: ${e.message}`);
+      })
       .finally(() => {
-        console.log('ReferenceList: bibManager initPromise resolving');
+        debugLog('Main', 'bibManager initPromise resolving');
         this.bibManager.initPromise.resolve();
       });
+
+    // Safety timeout for bibManager initialization
+    setTimeout(() => {
+      if (!this.bibManager.initPromise.settled) {
+        debugLog('Main', 'bibManager initPromise timed out, resolving anyway');
+        this.bibManager.initPromise.resolve();
+      }
+    }, 60000);
 
     this.addSettingTab(new ReferenceListSettingsTab(this));
     this.registerEditorSuggest(new CiteSuggest(app, this));
@@ -100,15 +122,30 @@ export default class ReferenceList extends Plugin {
         }
       }
 
-      this.initPromise.resolve();
       this.app.workspace.trigger('parse-style-settings');
     });
 
     this.addCommand({
       id: 'focus-reference-list-view',
-      name: t('Show reference list'),
+      name: t('Show Current References'),
       callback: async () => {
-        this.initLeaf();
+        const view = await this.initLeaf();
+        if (view) {
+          view.mode = 'current';
+          this.processReferences();
+        }
+      },
+    });
+
+    this.addCommand({
+      id: 'open-reference-manager',
+      name: t('Show All References'),
+      callback: async () => {
+        const view = await this.initLeaf();
+        if (view) {
+          view.mode = 'all';
+          view.renderAllReferences();
+        }
       },
     });
 
@@ -126,7 +163,8 @@ export default class ReferenceList extends Plugin {
             await this.bibManager.initPromise.promise;
 
             const activeView = app.workspace.getActiveViewOfType(MarkdownView);
-            if (activeView && file === activeView.file) {
+            const currentFile = activeView?.file || this.lastActiveFile;
+            if (currentFile && file === currentFile) {
               this.processReferences();
             }
           },
@@ -163,15 +201,12 @@ export default class ReferenceList extends Plugin {
             await this.initPromise.promise;
             await this.bibManager.initPromise.promise;
 
-            app.workspace.iterateRootLeaves((rootLeaf) => {
-              if (rootLeaf === leaf) {
-                if (leaf.view instanceof MarkdownView) {
-                  this.processReferences();
-                } else {
-                  this.view?.setNoContentMessage();
-                }
-              }
-            });
+            if (leaf && leaf.view instanceof MarkdownView) {
+              this.lastActiveFile = leaf.view.file;
+              this.processReferences();
+            } else if (leaf && leaf.view.getViewType() === viewType) {
+              this.processReferences();
+            }
           },
           100,
           true
@@ -183,8 +218,10 @@ export default class ReferenceList extends Plugin {
       this.initStatusBar();
       this.setStatusBarLoading();
 
+      debugLog('Main', 'waiting for initPromise and bibManager.initPromise');
       await this.initPromise.promise;
       await this.bibManager.initPromise.promise;
+      debugLog('Main', 'promises resolved, setting status bar idle');
 
       this.setStatusBarIdle();
       this.processReferences();
@@ -243,9 +280,8 @@ export default class ReferenceList extends Plugin {
             .onClick(async () => {
               const activeView =
                 this.app.workspace.getActiveViewOfType(MarkdownView);
-              if (activeView) {
-                const file = activeView.file;
-
+              const file = activeView?.file || this.lastActiveFile;
+              if (file) {
                 if (this.bibManager.fileCache.has(file)) {
                   const cache = this.bibManager.fileCache.get(file);
                   if (cache.source !== this.bibManager) {
@@ -287,14 +323,21 @@ export default class ReferenceList extends Plugin {
     setIcon(this.statusBarIcon, 'lucide-at-sign');
   }
 
-  get view() {
+  get view(): ReferenceListView | null {
     const leaves = this.app.workspace.getLeavesOfType(viewType);
     if (!leaves?.length) return null;
-    return leaves[0].view as ReferenceListView;
+    const view = leaves[0].view;
+    if (view.getViewType() === viewType) {
+      return view as ReferenceListView;
+    }
+    return null;
   }
 
-  async initLeaf() {
-    if (this.view) return this.revealLeaf();
+  async initLeaf(): Promise<ReferenceListView | null> {
+    if (this.view) {
+      this.revealLeaf();
+      return this.view;
+    }
 
     await this.app.workspace.getRightLeaf(false).setViewState({
       type: viewType,
@@ -307,8 +350,10 @@ export default class ReferenceList extends Plugin {
 
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView) {
-      this.processReferences();
+      this.lastActiveFile = activeView.file;
     }
+    this.processReferences();
+    return this.view;
   }
 
   revealLeaf() {
@@ -350,41 +395,57 @@ export default class ReferenceList extends Plugin {
   );
 
   processReferences = async () => {
+    debugLog('Main', 'processReferences started');
     const { settings, view } = this;
+
+    if (view && view.mode === 'all') {
+      view.setViewContent(null);
+      return;
+    }
+
     if (!settings.pathToBibliography && !settings.pullFromZotero) {
+      debugLog('Main', 'no bibliography configured');
       return view?.setMessage(
         t(
-          'Please provide the path to your pandoc compatible bibliography file in the Pandoc Reference List plugin settings.'
+          'Please provide the path to your pandoc compatible bibliography file in the Bib Shower plugin settings.'
         )
       );
     }
 
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (activeView) {
+    const file = activeView?.file || this.lastActiveFile;
+
+    if (file) {
+      debugLog('Main', 'file found', file.path);
       try {
-        const fileContent = await this.app.vault.cachedRead(activeView.file);
-        const bib = await this.bibManager.getReferenceList(
-          activeView.file,
-          fileContent
-        );
-        const cache = this.bibManager.fileCache.get(activeView.file);
+        const fileContent = await this.app.vault.cachedRead(file);
+        debugLog('Main', 'fileContent read', { length: fileContent.length });
+        const bib = await this.bibManager.getReferenceList(file, fileContent);
+        debugLog('Main', 'getReferenceList finished', { hasBib: !!bib });
+        const cache = this.bibManager.fileCache.get(file);
 
         if (
           !bib &&
           cache?.source === this.bibManager &&
           settings.pullFromZotero &&
           !(await isZoteroRunning(settings.zoteroPort)) &&
-          this.bibManager.fileCache.get(activeView.file)?.keys.size
+          this.bibManager.fileCache.get(file)?.keys.size
         ) {
+          debugLog('Main', 'cannot connect to Zotero');
           view?.setMessage(t('Cannot connect to Zotero'));
         } else {
+          debugLog('Main', 'setting view content');
           view?.setViewContent(bib);
         }
       } catch (e) {
+        debugLog('Main', 'error in processReferences', e);
         console.error(e);
       }
     } else {
-      view?.setNoContentMessage();
+      debugLog('Main', 'no activeView or lastActiveFile found');
+      if (view && typeof view.setNoContentMessage === 'function') {
+        view.setNoContentMessage();
+      }
     }
   };
 

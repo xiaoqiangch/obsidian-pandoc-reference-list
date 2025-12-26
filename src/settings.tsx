@@ -27,6 +27,9 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   bibliographyPaths: [],
   enableCiteKeyCompletion: true,
   showCitekeyTooltips: true,
+  deepseekApiUrl: 'https://api.deepseek.com/v1',
+  deepseekApiKey: '',
+  attachmentDirectory: '',
 };
 
 export interface ZoteroGroup {
@@ -55,6 +58,10 @@ export interface ReferenceListSettings {
   pullFromZotero?: boolean;
   zoteroPort?: string;
   zoteroGroups: ZoteroGroup[];
+
+  deepseekApiUrl: string;
+  deepseekApiKey: string;
+  attachmentDirectory: string;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -418,5 +425,44 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             this.plugin.saveSettings();
           });
       });
+
+    containerEl.createEl('h3', { text: t('AI & Attachment Settings') });
+
+    new Setting(containerEl)
+      .setName(t('DeepSeek API URL'))
+      .addText((text) =>
+        text
+          .setPlaceholder('https://api.deepseek.com/v1')
+          .setValue(this.plugin.settings.deepseekApiUrl)
+          .onChange((value) => {
+            this.plugin.settings.deepseekApiUrl = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('DeepSeek API Key'))
+      .addText((text) =>
+        text
+          .setPlaceholder('sk-...')
+          .setValue(this.plugin.settings.deepseekApiKey)
+          .onChange((value) => {
+            this.plugin.settings.deepseekApiKey = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Attachment directory'))
+      .setDesc(t('Directory where PDF attachments are stored.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('/path/to/attachments')
+          .setValue(this.plugin.settings.attachmentDirectory)
+          .onChange((value) => {
+            this.plugin.settings.attachmentDirectory = value;
+            this.plugin.saveSettings();
+          })
+      );
   }
 }

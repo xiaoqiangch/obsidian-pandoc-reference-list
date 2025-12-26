@@ -1,6 +1,6 @@
 import { EditorView } from '@codemirror/view';
 import CSL from 'citeproc';
-import ReferenceList from 'src/main';
+import ReferenceList from '../main';
 import { PartialCSLEntry } from './types';
 import Fuse from 'fuse.js';
 import {
@@ -16,18 +16,20 @@ import {
   PromiseCapability,
   copyElToClipboard,
   getVaultRoot,
-} from 'src/helpers';
+  debugLog,
+  showDetailedTooltip,
+} from '../helpers';
 import {
   RenderedCitation,
   getCitationSegments,
   getCitations,
-} from 'src/parser/parser';
+} from '../parser/parser';
 import LRUCache from 'lru-cache';
 import { Keymap, MarkdownView, TFile, setIcon } from 'obsidian';
-import { cite } from 'src/parser/citeproc';
-import { setCiteKeyCache } from 'src/editorExtension';
+import { cite } from '../parser/citeproc';
+import { setCiteKeyCache } from '../editorExtension';
 import equal from 'fast-deep-equal';
-import { t } from 'src/lang/helpers';
+import { t } from '../lang/helpers';
 import path from 'path';
 import { FSWatcher, watch, existsSync, symlinkSync, mkdirSync } from 'fs';
 import crypto from 'crypto';
@@ -300,7 +302,8 @@ export class BibManager {
           const bib = await bibToCSL(
             bibPath,
             this.plugin.settings.pathToPandoc,
-            getVaultRoot
+            getVaultRoot,
+            this.plugin.cacheDir
           );
 
           for (const entry of bib) {
@@ -337,17 +340,17 @@ export class BibManager {
   }
 
   async loadGlobalBibFile(fromCache?: boolean) {
-    console.log('BibManager: loadGlobalBibFile called', { fromCache });
+    debugLog('BibManager', 'loadGlobalBibFile called', { fromCache });
     const { settings } = this.plugin;
 
     const bibPaths = [];
     if (settings.pathToBibliography) bibPaths.push(settings.pathToBibliography);
     if (settings.bibliographyPaths) bibPaths.push(...settings.bibliographyPaths);
 
-    console.log('BibManager: bibPaths', bibPaths);
+    debugLog('BibManager', 'bibPaths', bibPaths);
 
     if (bibPaths.length === 0) {
-      console.log('BibManager: no bibliography paths configured');
+      debugLog('BibManager', 'no bibliography paths configured');
       return;
     }
 
@@ -357,14 +360,15 @@ export class BibManager {
 
       for (const pathToBib of bibPaths) {
         try {
-          console.log(`BibManager: loading ${pathToBib}`);
+          debugLog('BibManager', `loading ${pathToBib}`);
           const bib = await bibToCSL(
             pathToBib,
             settings.pathToPandoc,
-            getVaultRoot
+            getVaultRoot,
+            this.plugin.cacheDir
           );
 
-          console.log(`BibManager: loaded ${bib.length} entries from ${pathToBib}`);
+          debugLog('BibManager', `loaded ${bib.length} entries from ${pathToBib}`);
 
           const bibPath = getBibPath(pathToBib, getVaultRoot);
 
@@ -392,6 +396,7 @@ export class BibManager {
             allBibEntries.push(entry);
           }
         } catch (e) {
+          debugLog('BibManager', `Error loading bibliography file ${pathToBib}`, e);
           console.error(`Error loading bibliography file ${pathToBib}:`, e);
         }
       }
@@ -405,11 +410,24 @@ export class BibManager {
       'https://raw.githubusercontent.com/citation-style-language/styles/master/apa.csl';
     const lang = settings.cslLang || 'en-US';
 
+    debugLog('BibManager', 'loading lang and style', { lang, style });
     await this.getLangAndStyle(lang, {
       id: style,
       explicitPath: settings.cslStylePath,
     });
-    if (!this.styleCache.has(style)) return;
+    
+    debugLog('BibManager', 'getLangAndStyle finished', { 
+      hasStyle: this.styleCache.has(style), 
+      style, 
+      lang,
+      bibCacheSize: this.bibCache.size 
+    });
+
+    if (!this.styleCache.has(style)) {
+      debugLog('BibManager', `style ${style} not found in cache`);
+      console.error(`BibManager: style ${style} not found in cache`);
+      return;
+    }
 
     try {
       this.engine = this.buildEngine(
@@ -419,8 +437,10 @@ export class BibManager {
         this.styleCache,
         this.bibCache
       );
+      debugLog('BibManager', 'engine built successfully');
     } catch (e) {
-      console.error(e);
+      debugLog('BibManager', 'failed to build engine', e);
+      console.error('BibManager: failed to build engine', e);
     }
   }
 
@@ -471,7 +491,18 @@ export class BibManager {
       id: style,
       explicitPath: settings.cslStylePath,
     });
-    if (!this.styleCache.has(style)) return;
+    
+    console.log('BibManager: getLangAndStyle finished', { 
+      hasStyle: this.styleCache.has(style), 
+      style, 
+      lang,
+      bibCacheSize: this.bibCache.size 
+    });
+
+    if (!this.styleCache.has(style)) {
+      console.error(`BibManager: style ${style} not found in cache`);
+      return;
+    }
 
     try {
       this.engine = this.buildEngine(
@@ -481,8 +512,9 @@ export class BibManager {
         this.styleCache,
         this.bibCache
       );
+      console.log('BibManager: engine built successfully');
     } catch (e) {
-      console.error(e);
+      console.error('BibManager: failed to build engine', e);
     }
   }
 
@@ -656,13 +688,16 @@ export class BibManager {
   }
 
   async getReferenceList(file: TFile, content: string) {
+    debugLog('BibManager', 'getReferenceList started', file.path);
     await this.plugin.initPromise.promise;
     await this.initPromise.promise;
+    debugLog('BibManager', 'getReferenceList promises resolved');
 
     const segs = getCitationSegments(
       content,
       !this.plugin.settings.renderLinkCitations
     );
+    debugLog('BibManager', 'getCitationSegments finished', { count: segs.length });
     const processed = segs.map((s) => getCitations(s));
 
     if (!processed.length) return null;
@@ -799,7 +834,7 @@ export class BibManager {
     const htmlStr = [metadata.bibstart];
 
     metadata.entry_ids?.forEach((e: string, i: number) => {
-      entries[i] = entries[i].replace(/>/, ` data-citekey="${e[0]}">`);
+      entries[i] = entries[i].replace(/<([a-z0-9]+)/i, `<$1 data-citekey="${e[0]}"`);
       citeBibMap.set(e[0], entries[i]);
     });
 
@@ -905,127 +940,164 @@ export class BibManager {
 
     const cache = bibCache || this.bibCache;
 
-    parsed?.findAll('.csl-entry').forEach((e) => {
+    parsed?.findAll('.csl-entry').forEach((e, i) => {
       if (!inTooltip) {
         e.setAttribute('aria-label', t('Click to copy'));
         e.onClickEvent(() => copyElToClipboard(e));
       }
 
-      const div = createDiv({ cls: 'csl-entry-wrapper' });
-      e.parentElement.insertBefore(div, e);
-      div.append(e);
+      const wrapper = createDiv({ cls: 'csl-entry-wrapper' });
+      e.parentElement.insertBefore(wrapper, e);
+      wrapper.append(e);
 
-      if (e.dataset.citekey) {
-        const zLink = this.zCitekeyToLinks.get(e.dataset.citekey);
-        let linkText = '@' + e.dataset.citekey;
+      const target = e.querySelector('.csl-right-inline') || e;
+      const btnContainer = target.createSpan({ cls: 'pwc-entry-btns' });
+
+      const citekey = e.dataset.citekey || metadata.entry_ids?.[i]?.[0];
+      if (citekey) {
+        const zLink = this.zCitekeyToLinks.get(citekey);
+        let linkText = '@' + citekey;
         let linkDest = app.metadataCache.getFirstLinkpathDest(
           linkText,
           file.path
         );
         if (!linkDest) {
-          linkText = e.dataset.citekey;
+          linkText = citekey;
           linkDest = app.metadataCache.getFirstLinkpathDest(
             linkText,
             file.path
           );
         }
 
-        const entry = cache.get(e.dataset.citekey);
-        const zAttachmentLinks = this.zCitekeyToAttachmentLinks.get(e.dataset.citekey) || [];
+        const entry = cache.get(citekey);
+        const zAttachmentLinks = this.zCitekeyToAttachmentLinks.get(citekey) || [];
         const localAttachmentLinks = this.parseBibFileField(entry?.file);
         const allAttachmentLinks = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
 
-        if (!linkDest && !zLink && !allAttachmentLinks.length) return;
+        // Copy Citekey Button
+        btnContainer.createDiv('clickable-icon', (div) => {
+          setIcon(div, 'copy');
+          div.setAttr('aria-label', t('Copy citekey'));
+          div.onClickEvent(async () => {
+            await navigator.clipboard.writeText(`[@${citekey}]`);
+            new Notice(t('Citekey copied to clipboard'));
+          });
+        });
 
-        div.createDiv({ cls: 'pwc-entry-btns' }, (div) => {
-          if (linkDest) {
-            div.createDiv('clickable-icon', (div) => {
-              setIcon(div, 'sticky-note');
-              div.setAttr('aria-label', t('Open literature note'));
-              div.onClickEvent((e) => {
-                const newPane = Keymap.isModEvent(e);
-                app.workspace.openLinkText(linkText, file.path, newPane);
-              });
+        // Edit Button
+        if (entry?.sourceFile) {
+          btnContainer.createDiv('clickable-icon', (div) => {
+            setIcon(div, 'edit');
+            div.setAttr('aria-label', t('Edit in VS Code'));
+            div.onClickEvent(() => {
+              const path = entry.sourceFile;
+              const line = entry.line || 1;
+              const url = `vscode://file${path}:${line}`;
+              window.open(url);
             });
-          }
-          if (zLink) {
-            div.createDiv('clickable-icon', (div) => {
-              setIcon(div, 'lucide-external-link');
-              div.setAttr('aria-label', t('Open in Zotero'));
-              div.onClickEvent(() => {
-                activeWindow.open(zLink, '_blank');
-              });
+          });
+        }
+
+        // Info Button
+        if (entry) {
+          btnContainer.createDiv('clickable-icon', (div) => {
+            setIcon(div, 'info');
+            div.setAttr('aria-label', t('Show details'));
+            div.onClickEvent((ev) => {
+              ev.stopPropagation();
+              showDetailedTooltip(entry, div);
             });
-          }
+          });
+        }
 
-          if (allAttachmentLinks.length) {
-            allAttachmentLinks.forEach((link) => {
-              if (existsSync(link)) {
-                div.createDiv('clickable-icon', (div) => {
-                  const isPDF = link.toLowerCase().endsWith('.pdf');
-                  setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
-                  div.setAttr(
-                    'aria-label',
-                    t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : 'EPUB'))
-                  );
-                  div.onClickEvent(async () => {
-                    const vaultRoot = getVaultRoot();
-                    let relativePath = '';
-                    let isInsideVault = false;
+        if (linkDest) {
+          btnContainer.createDiv('clickable-icon', (div) => {
+            setIcon(div, 'sticky-note');
+            div.setAttr('aria-label', t('Open literature note'));
+            div.onClickEvent((e) => {
+              const newPane = Keymap.isModEvent(e);
+              app.workspace.openLinkText(linkText, file.path, newPane);
+            });
+          });
+        }
 
-                    if (link.startsWith(vaultRoot)) {
-                      isInsideVault = true;
-                      relativePath = link
-                        .substring(vaultRoot.length)
-                        .replace(/^[\\\/]/, '');
-                    }
+        if (zLink) {
+          btnContainer.createDiv('clickable-icon', (div) => {
+            setIcon(div, 'lucide-external-link');
+            div.setAttr('aria-label', t('Open in Zotero'));
+            div.onClickEvent(() => {
+              activeWindow.open(zLink, '_blank');
+            });
+          });
+        }
 
-                    if (isInsideVault) {
-                      const tfile = app.vault.getAbstractFileByPath(relativePath);
-                      if (tfile instanceof TFile) {
-                        const leaf = app.workspace.getRightLeaf(false);
-                        await leaf.openFile(tfile);
-                        
-                        if (isPDF) {
-                          // Attempt to enable annotation mode and show tools
-                          setTimeout(() => {
-                            const view = leaf.view as any;
-                            if (view.type === 'pdf') {
-                              if (view.viewer) {
-                                if (view.viewer.then) {
-                                  view.viewer.then((v: any) => {
-                                    if (v && v.setAnnotationMode) v.setAnnotationMode(true);
-                                  });
-                                } else if (view.viewer.setAnnotationMode) {
-                                  view.viewer.setAnnotationMode(true);
-                                }
-                              }
-                              
-                              const toolbar = view.contentEl.querySelector('.pdf-toolbar');
-                              if (toolbar) {
-                                toolbar.style.display = 'flex';
-                                const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
-                                if (annotateBtn && !annotateBtn.hasClass('is-active')) {
-                                  annotateBtn.click();
-                                }
+        if (allAttachmentLinks.length) {
+          allAttachmentLinks.forEach((link) => {
+            if (existsSync(link)) {
+              btnContainer.createDiv('clickable-icon', (div) => {
+                const isPDF = link.toLowerCase().endsWith('.pdf');
+                setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
+                div.setAttr(
+                  'aria-label',
+                  t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : 'EPUB'))
+                );
+                div.onClickEvent(async () => {
+                  const vaultRoot = getVaultRoot();
+                  let relativePath = '';
+                  let isInsideVault = false;
+
+                  if (link.startsWith(vaultRoot)) {
+                    isInsideVault = true;
+                    relativePath = link
+                      .substring(vaultRoot.length)
+                      .replace(/^[\\\/]/, '');
+                  }
+
+                  if (isInsideVault) {
+                    const tfile = app.vault.getAbstractFileByPath(relativePath);
+                    if (tfile instanceof TFile) {
+                      const leaf = app.workspace.getRightLeaf(false);
+                      await leaf.openFile(tfile);
+                      
+                      if (isPDF) {
+                        // Attempt to enable annotation mode and show tools
+                        setTimeout(() => {
+                          const view = leaf.view as any;
+                          if (view.type === 'pdf') {
+                            if (view.viewer) {
+                              if (view.viewer.then) {
+                                view.viewer.then((v: any) => {
+                                  if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+                                });
+                              } else if (view.viewer.setAnnotationMode) {
+                                view.viewer.setAnnotationMode(true);
                               }
                             }
-                          }, 1000);
-                        }
-
-                        app.workspace.revealLeaf(leaf);
-                        return;
+                            
+                            const toolbar = view.contentEl.querySelector('.pdf-toolbar');
+                            if (toolbar) {
+                              toolbar.style.display = 'flex';
+                              const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
+                              if (annotateBtn && !annotateBtn.hasClass('is-active')) {
+                                annotateBtn.click();
+                              }
+                            }
+                          }
+                        }, 1000);
                       }
-                    }
 
-                    // For external files, use virtual link (symlink) to open in Obsidian
-                    await this.openExternalFileInternal(link);
-                  });
+                      app.workspace.revealLeaf(leaf);
+                      return;
+                    }
+                  }
+
+                  // For external files, use virtual link (symlink) to open in Obsidian
+                  await this.openExternalFileInternal(link);
                 });
-              }
-            });
-          }
-        });
+              });
+            }
+          });
+        }
       }
     });
 
@@ -1049,10 +1121,12 @@ export class BibManager {
       try {
         symlinkSync(link, linkPath, 'file');
       } catch (e) {
-        console.error('Failed to create symlink', e);
-        // Fallback to shell open if symlink fails
-        require('electron').shell.openPath(link);
-        return;
+        if (e.code !== 'EEXIST') {
+          console.error('Failed to create symlink', e);
+          // Fallback to shell open if symlink fails
+          require('electron').shell.openPath(link);
+          return;
+        }
       }
     }
 
