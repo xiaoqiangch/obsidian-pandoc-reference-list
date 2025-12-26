@@ -16,7 +16,7 @@ interface Loading {
   loading: boolean;
 }
 
-const triggerRE = /(^|[ \t\v[\-\r\n;])(@)([\p{L}\p{N}:.#$%&\-+?<>~_/]+)$/u;
+const triggerRE = /(^|[ \t\v[\-\r\n;])([\[【]?@)([\p{L}\p{N}:.#$%&\-+?<>~_/]*)$/u;
 
 export class CiteSuggest extends EditorSuggest<
   Fuse.FuseResult<PartialCSLEntry> | Loading
@@ -57,8 +57,7 @@ export class CiteSuggest extends EditorSuggest<
 
   getSuggestions(context: EditorSuggestContext) {
     if (
-      !context.query ||
-      context.query.length < 2 ||
+      context.query === undefined ||
       context.query.includes(' ')
     ) {
       return null;
@@ -75,7 +74,25 @@ export class CiteSuggest extends EditorSuggest<
       fuse = cache.source.fuse;
     }
 
-    const results = fuse?.search(context.query, {
+    if (!fuse) return null;
+
+    if (context.query.length === 0) {
+      // Return some default suggestions if query is empty
+      let entries: PartialCSLEntry[] = [];
+      if (bibManager.fileCache.has(context.file)) {
+        const cache = bibManager.fileCache.get(context.file);
+        entries = Array.from(cache.source.bibCache.values());
+      } else {
+        entries = Array.from(bibManager.bibCache.values());
+      }
+
+      return entries.slice(0, this.limit).map((item, index) => ({
+        item,
+        refIndex: index,
+      }));
+    }
+
+    const results = fuse.search(context.query, {
       limit: this.limit,
     });
 
@@ -151,14 +168,19 @@ export class CiteSuggest extends EditorSuggest<
       return;
     }
 
+    const { start, end } = this.context;
+    const line = activeView.editor.getLine(start.line);
+    const trigger = line.substring(start.ch, end.ch - this.context.query.length);
+
     let replaceStr = '';
-    if (event.metaKey || event.ctrlKey) {
+    if (trigger.startsWith('[') || trigger.startsWith('【')) {
+      const closing = trigger.startsWith('[') ? ']' : '】';
+      replaceStr = `${trigger}${suggestion.item.id}${closing}`;
+    } else if (event.metaKey || event.ctrlKey) {
       replaceStr = `[@${suggestion.item.id}]`;
     } else {
       replaceStr = `@${suggestion.item.id}`;
     }
-
-    const { start, end } = this.context;
 
     activeView.editor.replaceRange(replaceStr, start, end);
 
