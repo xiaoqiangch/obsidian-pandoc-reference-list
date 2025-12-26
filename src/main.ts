@@ -47,9 +47,11 @@ export default class ReferenceList extends Plugin {
   }
 
   async onload() {
+    console.log('ReferenceList: loading plugin');
     const { app } = this;
 
     await this.loadSettings();
+    console.log('ReferenceList: settings loaded', this.settings);
 
     this.registerView(
       viewType,
@@ -61,16 +63,21 @@ export default class ReferenceList extends Plugin {
     this.bibManager = new BibManager(this);
     this.initPromise.promise
       .then(() => {
+        console.log('ReferenceList: initPromise resolved, loading bib files');
         if (this.settings.pullFromZotero) {
           return this.bibManager.loadAndRefreshGlobalZBib();
         } else {
           return this.bibManager.loadGlobalBibFile();
         }
       })
-      .finally(() => this.bibManager.initPromise.resolve());
+      .finally(() => {
+        console.log('ReferenceList: bibManager initPromise resolving');
+        this.bibManager.initPromise.resolve();
+      });
 
     this.addSettingTab(new ReferenceListSettingsTab(this));
     this.registerEditorSuggest(new CiteSuggest(app, this));
+    console.log('ReferenceList: CiteSuggest registered');
     this.tooltipManager = new TooltipManager(this);
     this.registerMarkdownPostProcessor(processCiteKeys(this));
     this.registerEditorExtension([
@@ -342,12 +349,6 @@ export default class ReferenceList extends Plugin {
     true
   );
 
-  processReferencesDebounced = debounce(
-    this.processReferences.bind(this),
-    250,
-    true
-  );
-
   processReferences = async () => {
     const { settings, view } = this;
     if (!settings.pathToBibliography && !settings.pullFromZotero) {
@@ -386,4 +387,10 @@ export default class ReferenceList extends Plugin {
       view?.setNoContentMessage();
     }
   };
+
+  processReferencesDebounced = debounce(
+    this.processReferences.bind(this),
+    250,
+    true
+  );
 }

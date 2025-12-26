@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   renderCitationsReadingMode: true,
   renderLinkCitations: true,
   bibliographyPaths: [],
+  enableCiteKeyCompletion: true,
+  showCitekeyTooltips: true,
 };
 
 export interface ZoteroGroup {

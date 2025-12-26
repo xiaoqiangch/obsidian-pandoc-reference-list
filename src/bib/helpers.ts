@@ -61,6 +61,7 @@ export async function bibToCSL(
 
   const args = [bibPath, '-t', 'csljson', '--quiet'];
 
+  console.log(`bibToCSL: executing ${pathToPandoc} ${args.join(' ')}`);
   const res = await execa(pathToPandoc, args);
 
   if (res.stderr) {

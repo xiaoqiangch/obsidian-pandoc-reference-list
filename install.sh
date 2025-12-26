@@ -76,7 +76,7 @@ echo -e "${GREEN}✓ 编译成功，已生成 main.js${NC}"
 echo -e "\n${YELLOW}步骤 3: 安装到 Obsidian 仓库...${NC}"
 
 # 目标目录
-TARGET="../testBrain/.obsidian/plugins/obsidian-pandoc-reference-list"
+TARGET="../testBrain/.obsidian/plugins/bib-shower-obsidian"
 
 echo "目标目录: $TARGET"
 

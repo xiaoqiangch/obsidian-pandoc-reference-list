@@ -47,8 +47,8 @@ export default {
   'Process citations in links': '处理链接中的引用',
   'Include [[@pandoc]] citations in the reference list and format them as inline citations in live preview mode.':
     '在参考文献列表中包含 [[@pandoc]] 引用，并在实时预览模式下将其格式化为行内引用。',
-  'Please provide the path to pandoc in the Pandoc Reference List plugin settings.':
-    '请在 Pandoc Reference List 插件设置中提供 pandoc 的路径。',
+  'Please provide the path to pandoc in the Bib Shower plugin settings.':
+    '请在 Bib Shower 插件设置中提供 pandoc 的路径。',
   'Click to copy': '点击复制',
   'Copy list': '复制列表',
   'No citations found in the current document.': '当前文档中未找到引用。',
@@ -59,10 +59,10 @@ export default {
   'Cannot connect to Zotero': '无法连接到 Zotero',
   'Start Zotero and try again.': '启动 Zotero 并重试。',
   'Libraries to include in bibliography': '要包含在文献库中的库',
-  'Please provide the path to your pandoc compatible bibliography file in the Pandoc Reference List plugin settings.':
-    '请在 Pandoc Reference List 插件设置中提供 pandoc 兼容的文献库文件路径。',
+  'Please provide the path to your pandoc compatible bibliography file in the Bib Shower plugin settings.':
+    '请在 Bib Shower 插件设置中提供 pandoc 兼容的文献库文件路径。',
   'Refresh bibliography': '刷新文献库',
-  'Pandoc reference list settings': 'Pandoc Reference List 设置',
+  'Pandoc reference list settings': 'Bib Shower 设置',
   'No citation found for ': '未找到引用：',
   'Show reference list': '显示参考文献列表',
   'Open literature note': '打开文献笔记',

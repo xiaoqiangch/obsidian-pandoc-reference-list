@@ -56,15 +56,20 @@ export class CiteSuggest extends EditorSuggest<
   }
 
   getSuggestions(context: EditorSuggestContext) {
+    console.log('CiteSuggest: getSuggestions called', context.query);
     if (
       context.query === undefined ||
       context.query.includes(' ')
     ) {
+      console.log('CiteSuggest: query is undefined or contains space');
       return null;
     }
 
     const { plugin } = this;
-    if (!plugin.initPromise.settled) return null;
+    if (!plugin.initPromise.settled) {
+      console.log('CiteSuggest: plugin not settled');
+      return null;
+    }
 
     const { bibManager } = plugin;
 
@@ -72,11 +77,18 @@ export class CiteSuggest extends EditorSuggest<
     if (bibManager.fileCache.has(context.file)) {
       const cache = bibManager.fileCache.get(context.file);
       fuse = cache.source.fuse;
+      console.log('CiteSuggest: using file-specific fuse');
+    } else {
+      console.log('CiteSuggest: using global fuse');
     }
 
-    if (!fuse) return null;
+    if (!fuse) {
+      console.log('CiteSuggest: no fuse instance found');
+      return null;
+    }
 
     if (context.query.length === 0) {
+      console.log('CiteSuggest: empty query, returning default suggestions');
       // Return some default suggestions if query is empty
       let entries: PartialCSLEntry[] = [];
       if (bibManager.fileCache.has(context.file)) {
@@ -86,6 +98,7 @@ export class CiteSuggest extends EditorSuggest<
         entries = Array.from(bibManager.bibCache.values());
       }
 
+      console.log(`CiteSuggest: found ${entries.length} entries`);
       return entries.slice(0, this.limit).map((item, index) => ({
         item,
         refIndex: index,
@@ -96,6 +109,7 @@ export class CiteSuggest extends EditorSuggest<
       limit: this.limit,
     });
 
+    console.log(`CiteSuggest: search results count: ${results?.length || 0}`);
     return results?.length ? results : null;
   }
 
@@ -103,6 +117,7 @@ export class CiteSuggest extends EditorSuggest<
     suggestion: Fuse.FuseResult<PartialCSLEntry> | Loading,
     el: HTMLElement
   ): void {
+    console.log('CiteSuggest: rendering suggestion', suggestion);
     const frag = createFragment();
 
     if ((suggestion as { loading: boolean }).loading) {
@@ -172,17 +187,27 @@ export class CiteSuggest extends EditorSuggest<
     const line = activeView.editor.getLine(start.line);
     const trigger = line.substring(start.ch, end.ch - this.context.query.length);
 
+    // Check if there's a closing bracket after the cursor to avoid duplicates
+    const nextChar = line.substring(end.ch, end.ch + 1);
+    const hasClosingBracket = nextChar === ']';
+
     let replaceStr = '';
+    let actualEnd = end;
+
     if (trigger.startsWith('[') || trigger.startsWith('【')) {
-      const closing = trigger.startsWith('[') ? ']' : '】';
-      replaceStr = `${trigger}${suggestion.item.id}${closing}`;
+      // Replace both [ and 【 with [
+      replaceStr = `[@${suggestion.item.id}]`;
+      if (hasClosingBracket) {
+        // If there's already a closing bracket, include it in the replacement range
+        actualEnd = { ...end, ch: end.ch + 1 };
+      }
     } else if (event.metaKey || event.ctrlKey) {
       replaceStr = `[@${suggestion.item.id}]`;
     } else {
       replaceStr = `@${suggestion.item.id}`;
     }
 
-    activeView.editor.replaceRange(replaceStr, start, end);
+    activeView.editor.replaceRange(replaceStr, start, actualEnd);
 
     this.lastSelect = {
       ch: start.ch + replaceStr.length,
@@ -201,7 +226,9 @@ export class CiteSuggest extends EditorSuggest<
 
   onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo {
     const { enableCiteKeyCompletion, pullFromZotero } = this.plugin.settings;
-    if (!enableCiteKeyCompletion) return null;
+    if (!enableCiteKeyCompletion) {
+      return null;
+    }
 
     const { lastSelect } = this;
     if (
@@ -215,7 +242,10 @@ export class CiteSuggest extends EditorSuggest<
     const line = (editor.getLine(cursor.line) || '').substring(0, cursor.ch);
     const match = line.match(triggerRE);
 
-    if (!match) return null;
+    if (!match) {
+      return null;
+    }
+    console.log('CiteSuggest: onTrigger matched', match[0]);
     this.lastSelect = null;
 
     if (!this.context && pullFromZotero) {
@@ -228,6 +258,7 @@ export class CiteSuggest extends EditorSuggest<
       ch: triggerIndex,
     };
 
+    console.log('CiteSuggest: trigger query', match[3]);
     return {
       start: startPos,
       end: cursor,

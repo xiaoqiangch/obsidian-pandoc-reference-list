@@ -38,6 +38,8 @@ const fuseSettings = {
   keys: [
     { name: 'id', weight: 0.7 },
     { name: 'title', weight: 0.3 },
+    { name: 'author.family', weight: 0.2 },
+    { name: 'author.given', weight: 0.1 },
   ],
 };
 
@@ -178,7 +180,10 @@ export class BibManager {
       noDisposeOnSet: true,
       dispose: (cache) => {
         if (cache.settings?.bibliography) {
-          this.clearWatcher(cache.settings.bibliography);
+          const bibs = Array.isArray(cache.settings.bibliography)
+            ? cache.settings.bibliography
+            : [cache.settings.bibliography];
+          bibs.forEach((b) => this.clearWatcher(b));
         }
       },
     });
@@ -222,6 +227,7 @@ export class BibManager {
   }
 
   setFuse(data: PartialCSLEntry[] = []) {
+    console.log(`BibManager: setFuse called with ${data.length} entries`);
     if (!this.fuse) {
       this.fuse = new Fuse(data, fuseSettings);
     } else {
@@ -330,13 +336,19 @@ export class BibManager {
   }
 
   async loadGlobalBibFile(fromCache?: boolean) {
+    console.log('BibManager: loadGlobalBibFile called', { fromCache });
     const { settings } = this.plugin;
 
     const bibPaths = [];
     if (settings.pathToBibliography) bibPaths.push(settings.pathToBibliography);
     if (settings.bibliographyPaths) bibPaths.push(...settings.bibliographyPaths);
 
-    if (bibPaths.length === 0) return;
+    console.log('BibManager: bibPaths', bibPaths);
+
+    if (bibPaths.length === 0) {
+      console.log('BibManager: no bibliography paths configured');
+      return;
+    }
 
     if (!fromCache || this.bibCache.size === 0) {
       this.bibCache = new Map();
@@ -344,11 +356,14 @@ export class BibManager {
 
       for (const pathToBib of bibPaths) {
         try {
+          console.log(`BibManager: loading ${pathToBib}`);
           const bib = await bibToCSL(
             pathToBib,
             settings.pathToPandoc,
             getVaultRoot
           );
+
+          console.log(`BibManager: loaded ${bib.length} entries from ${pathToBib}`);
 
           const bibPath = getBibPath(pathToBib, getVaultRoot);
 
