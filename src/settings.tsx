@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   renderCitations: true,
   renderCitationsReadingMode: true,
   renderLinkCitations: true,
+  bibliographyPaths: [],
 };
 
 export interface ZoteroGroup {
@@ -35,6 +36,7 @@ export interface ZoteroGroup {
 export interface ReferenceListSettings {
   pathToPandoc: string;
   pathToBibliography?: string;
+  bibliographyPaths: string[];
 
   cslStyleURL?: string;
   cslStylePath?: string;
@@ -156,6 +158,44 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           });
         });
       });
+
+    new Setting(containerEl)
+      .setName(t('Additional bibliography files'))
+      .setDesc(t('Add more bibliography files to be searched.'))
+      .addButton((button) => {
+        button
+          .setButtonText(t('Add'))
+          .onClick(() => {
+            const path = require('electron').remote.dialog.showOpenDialogSync({
+              properties: ['openFile'],
+            });
+
+            if (path && path.length) {
+              this.plugin.settings.bibliographyPaths.push(path[0]);
+              this.plugin.saveSettings(() =>
+                this.plugin.bibManager.reinit(true)
+              );
+              this.display();
+            }
+          });
+      });
+
+    this.plugin.settings.bibliographyPaths.forEach((bibPath, index) => {
+      new Setting(containerEl)
+        .setName(`${t('Bibliography')} ${index + 1}`)
+        .setDesc(bibPath)
+        .addExtraButton((b) => {
+          b.setIcon('trash');
+          b.setTooltip(t('Remove'));
+          b.onClick(() => {
+            this.plugin.settings.bibliographyPaths.splice(index, 1);
+            this.plugin.saveSettings(() =>
+              this.plugin.bibManager.reinit(true)
+            );
+            this.display();
+          });
+        });
+    });
 
     ReactDOM.render(
       <ZoteroPullSetting plugin={this.plugin} />,

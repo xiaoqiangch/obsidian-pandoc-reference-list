@@ -73,6 +73,11 @@ export default {
     'Please provide the path to your pandoc compatible bibliography file in the Pandoc Reference List plugin settings.',
   'Refresh bibliography': 'Refresh bibliography',
   'Pandoc reference list settings': 'Pandoc reference list settings',
+  'Additional bibliography files': 'Additional bibliography files',
+  'Add more bibliography files to be searched.': 'Add more bibliography files to be searched.',
+  Add: 'Add',
+  Bibliography: 'Bibliography',
+  Remove: 'Remove',
   // src/tooltip.ts
   'No citation found for ': 'No citation found for ',
 

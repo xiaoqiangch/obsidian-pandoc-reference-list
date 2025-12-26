@@ -44,7 +44,7 @@ const fuseSettings = {
 interface ScopedSettings {
   style?: string;
   lang?: string;
-  bibliography?: string;
+  bibliography?: string | string[];
 }
 
 export interface FileCache {
@@ -74,7 +74,17 @@ function getScopedSettings(file: TFile): ScopedSettings {
 
   const { frontmatter } = metadata;
 
-  output.bibliography = frontmatter.bibliography?.trim() || undefined;
+  if (frontmatter.bibliography) {
+    if (Array.isArray(frontmatter.bibliography)) {
+      output.bibliography = frontmatter.bibliography.map((b: string) => b.trim());
+    } else {
+      output.bibliography = frontmatter.bibliography.split(',').map((b: string) => b.trim());
+      if ((output.bibliography as string[]).length === 1) {
+        output.bibliography = (output.bibliography as string[])[0];
+      }
+    }
+  }
+
   output.style =
     frontmatter.csl?.trim() ||
     frontmatter['citation-style']?.trim() ||
@@ -89,8 +99,19 @@ function getScopedSettings(file: TFile): ScopedSettings {
   }
 
   // Checks whether the bibliography is a relative path and replaces the path with an absolute one
-  if (existsSync(path.join(getVaultRoot(), path.dirname(file.path), output.bibliography))){
-    output.bibliography = path.join(getVaultRoot(), path.dirname(file.path), output.bibliography);
+  const processPath = (bibPath: string) => {
+    if (existsSync(path.join(getVaultRoot(), path.dirname(file.path), bibPath))) {
+      return path.join(getVaultRoot(), path.dirname(file.path), bibPath);
+    }
+    return bibPath;
+  };
+
+  if (output.bibliography) {
+    if (Array.isArray(output.bibliography)) {
+      output.bibliography = output.bibliography.map(processPath);
+    } else {
+      output.bibliography = processPath(output.bibliography);
+    }
   }
 
   return output;
@@ -261,18 +282,27 @@ export class BibManager {
 
     if (settings.bibliography) {
       try {
-        const bib = await bibToCSL(
-          settings.bibliography,
-          this.plugin.settings.pathToPandoc,
-          getVaultRoot
-        );
+        const bibPaths = Array.isArray(settings.bibliography)
+          ? settings.bibliography
+          : [settings.bibliography];
+        
         bibCache = new Map();
+        const allEntries: PartialCSLEntry[] = [];
 
-        for (const entry of bib) {
-          bibCache.set(entry.id, entry);
+        for (const bibPath of bibPaths) {
+          const bib = await bibToCSL(
+            bibPath,
+            this.plugin.settings.pathToPandoc,
+            getVaultRoot
+          );
+
+          for (const entry of bib) {
+            bibCache.set(entry.id, entry);
+            allEntries.push(entry);
+          }
         }
 
-        fuse = new Fuse(bib, fuseSettings);
+        fuse = new Fuse(allEntries, fuseSettings);
       } catch (e) {
         console.error(e);
         return this;
@@ -302,42 +332,56 @@ export class BibManager {
   async loadGlobalBibFile(fromCache?: boolean) {
     const { settings } = this.plugin;
 
-    if (!settings.pathToBibliography) return;
+    const bibPaths = [];
+    if (settings.pathToBibliography) bibPaths.push(settings.pathToBibliography);
+    if (settings.bibliographyPaths) bibPaths.push(...settings.bibliographyPaths);
+
+    if (bibPaths.length === 0) return;
+
     if (!fromCache || this.bibCache.size === 0) {
-      const bib = await bibToCSL(
-        settings.pathToBibliography,
-        settings.pathToPandoc,
-        getVaultRoot
-      );
-
       this.bibCache = new Map();
-      const bibPath = getBibPath(settings.pathToBibliography, getVaultRoot);
+      const allBibEntries: PartialCSLEntry[] = [];
 
-      if (bibPath && !this.watcherCache.has(bibPath)) {
-        let dbTimer = 0;
-        this.watcherCache.set(
-          bibPath,
-          watch(bibPath, (evt) => {
-            if (evt === 'change') {
-              clearTimeout(dbTimer);
-              dbTimer = activeWindow.setTimeout(() => {
-                this.loadGlobalBibFile().then(() => {
-                  this.fileCache.clear();
-                  this.plugin.processReferences();
-                });
-              }, 100);
-            } else {
-              this.clearWatcher(bibPath);
-            }
-          })
-        );
+      for (const pathToBib of bibPaths) {
+        try {
+          const bib = await bibToCSL(
+            pathToBib,
+            settings.pathToPandoc,
+            getVaultRoot
+          );
+
+          const bibPath = getBibPath(pathToBib, getVaultRoot);
+
+          if (bibPath && !this.watcherCache.has(bibPath)) {
+            let dbTimer = 0;
+            this.watcherCache.set(
+              bibPath,
+              watch(bibPath, (evt) => {
+                if (evt === 'change') {
+                  clearTimeout(dbTimer);
+                  dbTimer = activeWindow.setTimeout(() => {
+                    this.loadGlobalBibFile().then(() => {
+                      this.fileCache.clear();
+                      this.plugin.processReferences();
+                    });
+                  }, 100);
+                } else {
+                  this.clearWatcher(bibPath);
+                }
+              })
+            );
+          }
+
+          for (const entry of bib) {
+            this.bibCache.set(entry.id, entry);
+            allBibEntries.push(entry);
+          }
+        } catch (e) {
+          console.error(`Error loading bibliography file ${pathToBib}:`, e);
+        }
       }
 
-      for (const entry of bib) {
-        this.bibCache.set(entry.id, entry);
-      }
-
-      this.setFuse(bib);
+      this.setFuse(allBibEntries);
     }
 
     const style =
@@ -626,12 +670,15 @@ export class BibManager {
     );
 
     const areSettingsEqual =
-      settings?.bibliography === cachedDoc?.settings?.bibliography &&
+      equal(settings?.bibliography, cachedDoc?.settings?.bibliography) &&
       settings?.style === cachedDoc?.settings?.style &&
       settings?.lang === cachedDoc?.settings?.lang;
 
     if (!areSettingsEqual && cachedDoc?.settings?.bibliography) {
-      this.clearWatcher(cachedDoc.settings.bibliography);
+      const oldBibs = Array.isArray(cachedDoc.settings.bibliography)
+        ? cachedDoc.settings.bibliography
+        : [cachedDoc.settings.bibliography];
+      oldBibs.forEach((b) => this.clearWatcher(b));
     }
 
     const source =
@@ -640,23 +687,33 @@ export class BibManager {
         : await this.loadScopedEngine(settings);
 
     if (settings?.bibliography) {
-      const bibPath = getBibPath(settings.bibliography, getVaultRoot);
-      if (!this.watcherCache.has(bibPath)) {
-        let dbTimer = 0;
-        this.watcherCache.set(
-          bibPath,
-          watch(bibPath, (evt) => {
-            if (evt === 'change') {
-              clearTimeout(dbTimer);
-              dbTimer = activeWindow.setTimeout(() => {
-                this.fileCache.delete(file);
-                this.plugin.processReferences();
-              }, 100);
-            } else {
-              this.clearWatcher(bibPath);
-            }
-          })
-        );
+      const bibPaths = Array.isArray(settings.bibliography)
+        ? settings.bibliography
+        : [settings.bibliography];
+
+      for (const pathToBib of bibPaths) {
+        try {
+          const bibPath = getBibPath(pathToBib, getVaultRoot);
+          if (!this.watcherCache.has(bibPath)) {
+            let dbTimer = 0;
+            this.watcherCache.set(
+              bibPath,
+              watch(bibPath, (evt) => {
+                if (evt === 'change') {
+                  clearTimeout(dbTimer);
+                  dbTimer = activeWindow.setTimeout(() => {
+                    this.fileCache.delete(file);
+                    this.plugin.processReferences();
+                  }, 100);
+                } else {
+                  this.clearWatcher(bibPath);
+                }
+              })
+            );
+          }
+        } catch (e) {
+          console.error(`Error watching bibliography file ${pathToBib}:`, e);
+        }
       }
     }
 

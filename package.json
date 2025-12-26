@@ -23,7 +23,7 @@
     "@babel/core": "7.17.9",
     "@babel/preset-env": "7.16.11",
     "@babel/preset-typescript": "7.16.7",
-    "@codemirror/language": "https://github.com/lishid/cm-language",
+    "@codemirror/language": "^6.6.0",
     "@types/download": "^8.0.2",
     "@types/jest": "27.4.1",
     "@types/lru-cache": "7.6.1",
