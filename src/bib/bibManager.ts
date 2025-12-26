@@ -29,7 +29,8 @@ import { setCiteKeyCache } from 'src/editorExtension';
 import equal from 'fast-deep-equal';
 import { t } from 'src/lang/helpers';
 import path from 'path';
-import { FSWatcher, watch, existsSync } from 'fs';
+import { FSWatcher, watch, existsSync, symlinkSync, mkdirSync } from 'fs';
+import crypto from 'crypto';
 
 const fuseSettings = {
   includeMatches: true,
@@ -983,13 +984,28 @@ export class BibManager {
                       if (tfile instanceof TFile) {
                         const leaf = app.workspace.getRightLeaf(false);
                         await leaf.openFile(tfile);
+                        
+                        // Attempt to enable annotation mode automatically
+                        setTimeout(() => {
+                          const view = leaf.view as any;
+                          if (view.type === 'pdf' && view.viewer) {
+                            if (view.viewer.then) {
+                              view.viewer.then((v: any) => {
+                                if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+                              });
+                            } else if (view.viewer.setAnnotationMode) {
+                              view.viewer.setAnnotationMode(true);
+                            }
+                          }
+                        }, 500);
+
                         app.workspace.revealLeaf(leaf);
                         return;
                       }
                     }
 
-                    // For external files, use system default app
-                    require('electron').shell.openPath(link);
+                    // For external files, use virtual link (symlink) to open in Obsidian
+                    await this.openExternalPDFInternal(link);
                   });
                 });
               }
@@ -1000,6 +1016,66 @@ export class BibManager {
     });
 
     return parsed;
+  }
+
+  async openExternalPDFInternal(link: string) {
+    const vaultRoot = getVaultRoot();
+    const linksDirName = '_bib-links';
+    const linksDir = path.join(vaultRoot, linksDirName);
+    if (!existsSync(linksDir)) {
+      mkdirSync(linksDir, { recursive: true });
+    }
+
+    const hash = crypto.createHash('md5').update(link).digest('hex');
+    const fileName = `${path.parse(link).name}_${hash.slice(0, 8)}.pdf`;
+    const linkPath = path.join(linksDir, fileName);
+
+    if (!existsSync(linkPath)) {
+      try {
+        symlinkSync(link, linkPath, 'file');
+      } catch (e) {
+        console.error('Failed to create symlink', e);
+        // Fallback to shell open if symlink fails
+        require('electron').shell.openPath(link);
+        return;
+      }
+    }
+
+    // Wait for Obsidian to see the file
+    let tfile = app.vault.getAbstractFileByPath(`${linksDirName}/${fileName}`);
+    let attempts = 0;
+    while (!tfile && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      tfile = app.vault.getAbstractFileByPath(`${linksDirName}/${fileName}`);
+      attempts++;
+    }
+
+    if (tfile instanceof TFile) {
+      const leaf = app.workspace.getRightLeaf(false);
+      await leaf.openFile(tfile);
+      
+      // Attempt to enable annotation mode automatically
+      setTimeout(() => {
+        const view = leaf.view as any;
+        if (view.type === 'pdf' && view.viewer) {
+          // This is the internal way to enable annotation mode in Obsidian's PDF viewer
+          if (view.viewer.then) {
+            view.viewer.then((v: any) => {
+              if (v && v.setAnnotationMode) {
+                v.setAnnotationMode(true);
+              }
+            });
+          } else if (view.viewer.setAnnotationMode) {
+            view.viewer.setAnnotationMode(true);
+          }
+        }
+      }, 500);
+
+      app.workspace.revealLeaf(leaf);
+    } else {
+      // If Obsidian still doesn't see it, try opening via shell
+      require('electron').shell.openPath(link);
+    }
   }
 
   parseBibFileField(fileField: string): string[] {
