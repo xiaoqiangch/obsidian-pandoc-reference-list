@@ -359,12 +359,11 @@ export class BibManager {
               watch(bibPath, (evt) => {
                 if (evt === 'change') {
                   clearTimeout(dbTimer);
-                  dbTimer = activeWindow.setTimeout(() => {
-                    this.loadGlobalBibFile().then(() => {
-                      this.fileCache.clear();
+                  dbTimer = window.setTimeout(() => {
+                    this.reinit(true).then(() => {
                       this.plugin.processReferences();
                     });
-                  }, 100);
+                  }, 500);
                 } else {
                   this.clearWatcher(bibPath);
                 }
@@ -701,10 +700,11 @@ export class BibManager {
               watch(bibPath, (evt) => {
                 if (evt === 'change') {
                   clearTimeout(dbTimer);
-                  dbTimer = activeWindow.setTimeout(() => {
-                    this.fileCache.delete(file);
-                    this.plugin.processReferences();
-                  }, 100);
+                  dbTimer = window.setTimeout(() => {
+                    this.reinit(true).then(() => {
+                      this.plugin.processReferences();
+                    });
+                  }, 500);
                 } else {
                   this.clearWatcher(bibPath);
                 }

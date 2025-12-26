@@ -6,6 +6,7 @@ import {
   WorkspaceLeaf,
   debounce,
   setIcon,
+  TFile,
 } from 'obsidian';
 import which from 'which';
 
@@ -126,6 +127,25 @@ export default class ReferenceList extends Plugin {
           true
         )
       )
+    );
+
+    this.registerEvent(
+      app.workspace.on('editor-change', () => {
+        this.processReferencesDebounced();
+      })
+    );
+
+    this.registerEvent(
+      app.vault.on('modify', (file) => {
+        if (
+          file instanceof TFile &&
+          (file.extension === 'bib' ||
+            file.extension === 'json' ||
+            file.extension === 'yaml')
+        ) {
+          this.bibManager.reinit(true).then(() => this.processReferences());
+        }
+      })
     );
 
     this.registerEvent(
@@ -319,6 +339,12 @@ export default class ReferenceList extends Plugin {
       }
     },
     5000,
+    true
+  );
+
+  processReferencesDebounced = debounce(
+    this.processReferences.bind(this),
+    250,
     true
   );
 
