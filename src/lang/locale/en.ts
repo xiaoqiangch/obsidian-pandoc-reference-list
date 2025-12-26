@@ -78,6 +78,7 @@ export default {
   Add: 'Add',
   Bibliography: 'Bibliography',
   Remove: 'Remove',
+  'Open attachment': 'Open attachment',
   // src/tooltip.ts
   'No citation found for ': 'No citation found for ',
 

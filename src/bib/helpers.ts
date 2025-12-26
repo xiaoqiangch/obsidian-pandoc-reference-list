@@ -68,7 +68,37 @@ export async function bibToCSL(
     throw new Error(`bibToCSL: ${res.stderr}`);
   }
 
-  return JSON.parse(res.stdout);
+  const csl = JSON.parse(res.stdout) as PartialCSLEntry[];
+
+  // If it's a bib file, try to extract the 'file' field which pandoc drops
+  if (parsed.ext === '.bib') {
+    try {
+      const bibContent = fs.readFileSync(bibPath, 'utf-8');
+      const fileMap = new Map<string, string>();
+      
+      const entries = bibContent.split(/^\s*@/m);
+      for (const entry of entries) {
+        const citekeyMatch = entry.match(/^\w+\s*\{\s*([^,]+),/);
+        if (citekeyMatch) {
+          const citekey = citekeyMatch[1].trim();
+          const fileMatch = entry.match(/file\s*=\s*[\{\"]([^\"\}]+)[\}\"]/i);
+          if (fileMatch) {
+            fileMap.set(citekey, fileMatch[1].trim());
+          }
+        }
+      }
+
+      for (const entry of csl) {
+        if (fileMap.has(entry.id)) {
+          entry.file = fileMap.get(entry.id);
+        }
+      }
+    } catch (e) {
+      console.error('Error extracting file fields from bib file:', e);
+    }
+  }
+
+  return csl;
 }
 
 export async function getCSLLocale(

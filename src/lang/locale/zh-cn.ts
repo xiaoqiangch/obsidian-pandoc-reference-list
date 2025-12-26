@@ -72,4 +72,5 @@ export default {
   Add: '添加',
   Bibliography: '文献库',
   Remove: '移除',
+  'Open attachment': '打开附件',
 };

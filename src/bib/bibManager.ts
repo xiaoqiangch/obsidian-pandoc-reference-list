@@ -649,7 +649,7 @@ export class BibManager {
     const el = doc.body.firstElementChild as HTMLElement;
     if (el) {
       el.dataset.citekey = key;
-      return this.prepBibHTML(el, file, true);
+      return this.prepBibHTML(el, file, true, cache.source.bibCache);
     }
     return el;
   }
@@ -814,7 +814,7 @@ export class BibManager {
       if (this.plugin.settings.pullFromZotero && !settings?.bibliography) {
         await this.getZLinksForKeys(resolvedKeys);
       }
-      parsed = this.prepBibHTML(parsed, file);
+      parsed = this.prepBibHTML(parsed, file, false, source.bibCache);
     }
 
     const result: FileCache = {
@@ -884,7 +884,12 @@ export class BibManager {
     }
   }
 
-  prepBibHTML(parsed: HTMLElement, file: TFile, inTooltip?: boolean) {
+  prepBibHTML(
+    parsed: HTMLElement,
+    file: TFile,
+    inTooltip?: boolean,
+    bibCache?: Map<string, PartialCSLEntry>
+  ) {
     if (this.plugin.settings.hideLinks) {
       parsed?.findAll('a').forEach((l) => {
         l.setAttribute('aria-label', l.innerText);
@@ -896,6 +901,8 @@ export class BibManager {
       parsed = createDiv();
       parsed.append(entry);
     }
+
+    const cache = bibCache || this.bibCache;
 
     parsed?.findAll('.csl-entry').forEach((e) => {
       if (!inTooltip) {
@@ -909,7 +916,7 @@ export class BibManager {
 
       if (e.dataset.citekey) {
         const zLink = this.zCitekeyToLinks.get(e.dataset.citekey);
-        const zPDFLinks = this.zCitekeyToPDFLinks.get(e.dataset.citekey);
+        const zPDFLinks = this.zCitekeyToPDFLinks.get(e.dataset.citekey) || [];
         let linkText = '@' + e.dataset.citekey;
         let linkDest = app.metadataCache.getFirstLinkpathDest(
           linkText,
@@ -923,7 +930,11 @@ export class BibManager {
           );
         }
 
-        if (!linkDest && !zLink && !zPDFLinks) return;
+        const entry = cache.get(e.dataset.citekey);
+        const localPDFLinks = this.parseBibFileField(entry?.file);
+        const allPDFLinks = [...new Set([...zPDFLinks, ...localPDFLinks])];
+
+        if (!linkDest && !zLink && !allPDFLinks.length) return;
 
         div.createDiv({ cls: 'pwc-entry-btns' }, (div) => {
           if (linkDest) {
@@ -945,15 +956,43 @@ export class BibManager {
               });
             });
           }
-          if (zPDFLinks) {
-            zPDFLinks.forEach((link) => {
-              div.createDiv('clickable-icon', (div) => {
-                setIcon(div, 'lucide-file-text');
-                div.setAttr('aria-label', path.parse(link).base);
-                div.onClickEvent(() => {
-                  activeWindow.open(`file://${encodeURI(link)}`, '_blank');
+
+          if (allPDFLinks.length) {
+            allPDFLinks.forEach((link) => {
+              if (existsSync(link)) {
+                div.createDiv('clickable-icon', (div) => {
+                  setIcon(div, 'lucide-file-text');
+                  div.setAttr(
+                    'aria-label',
+                    t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || 'PDF')
+                  );
+                  div.onClickEvent(async () => {
+                    const vaultRoot = getVaultRoot();
+                    let relativePath = '';
+                    let isInsideVault = false;
+
+                    if (link.startsWith(vaultRoot)) {
+                      isInsideVault = true;
+                      relativePath = link
+                        .substring(vaultRoot.length)
+                        .replace(/^[\\\/]/, '');
+                    }
+
+                    if (isInsideVault) {
+                      const tfile = app.vault.getAbstractFileByPath(relativePath);
+                      if (tfile instanceof TFile) {
+                        const leaf = app.workspace.getRightLeaf(false);
+                        await leaf.openFile(tfile);
+                        app.workspace.revealLeaf(leaf);
+                        return;
+                      }
+                    }
+
+                    // For external files, use system default app
+                    require('electron').shell.openPath(link);
+                  });
                 });
-              });
+              }
             });
           }
         });
@@ -961,6 +1000,30 @@ export class BibManager {
     });
 
     return parsed;
+  }
+
+  parseBibFileField(fileField: string): string[] {
+    if (!fileField) return [];
+    const files = fileField.split(';');
+    const paths: string[] = [];
+    for (const f of files) {
+      const parts = f.split(':');
+      let p = parts.length >= 2 ? parts[1] : f;
+
+      if (p) {
+        p = p.trim();
+        p = p.replace(/^[\{\"]|[\}\"]$/g, '');
+
+        if (p) {
+          if (path.isAbsolute(p)) {
+            paths.push(p);
+          } else {
+            paths.push(path.join(getVaultRoot(), p));
+          }
+        }
+      }
+    }
+    return paths.filter((p) => p.toLowerCase().endsWith('.pdf'));
   }
 
   dispatchResult(file: TFile, result: FileCache) {
