@@ -107,18 +107,19 @@ export class ReferenceListView extends ItemView {
       });
     }
 
+    const activeFile = this.plugin.app.workspace.getActiveFile() || this.plugin.lastActiveFile;
+    const count = this.mode === 'current'
+      ? (activeFile ? this.plugin.bibManager.fileCache.get(activeFile)?.keys.size || 0 : 0)
+      : this.plugin.bibManager.bibCache.size;
+
+    if (count > 0) {
+      actionsContainer.createDiv({
+        cls: 'pwc-reference-list__count',
+        text: count.toString(),
+      });
+    }
+
     if (this.mode === 'current') {
-      const activeFile = this.plugin.app.workspace.getActiveFile() || this.plugin.lastActiveFile;
-      const cache = activeFile ? this.plugin.bibManager.fileCache.get(activeFile) : null;
-      const count = cache?.keys.size || 0;
-
-      if (count) {
-        actionsContainer.createDiv({
-          cls: 'pwc-reference-list__count',
-          text: count.toString(),
-        });
-      }
-
       actionsContainer.createDiv({
         cls: 'clickable-icon',
         attr: { 'aria-label': t('Copy list') },
