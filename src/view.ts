@@ -5,7 +5,9 @@ import { t } from './lang/helpers';
 import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
-import * as fs from 'fs';
+
+const fs = require('fs');
+const path = require('path');
 
 export const viewType = 'ReferenceListView';
 
@@ -455,6 +457,19 @@ export class ReferenceListView extends ItemView {
                         });
                     });
 
+                    // Get Attachment Button
+                    const hasAttachment = paths.length > 0;
+                    if (!hasAttachment) {
+                        btnContainer.createDiv('clickable-icon', (div) => {
+                            setIcon(div, 'download');
+                            div.setAttr('aria-label', t('Get attachment'));
+                            div.onClickEvent(async (ev) => {
+                                ev.stopPropagation();
+                                await this.getAttachment(entry);
+                            });
+                        });
+                    }
+
                     if (paths.length > 0) {
                         paths.forEach(link => {
                             const isPDF = link.toLowerCase().endsWith('.pdf');
@@ -511,6 +526,61 @@ export class ReferenceListView extends ItemView {
     }
   }
 
+  async getAttachment(entry: PartialCSLEntry) {
+    const { browserDownloadDirectory, attachmentDirectory } = this.plugin.settings;
+    if (!browserDownloadDirectory || !attachmentDirectory) {
+      new Notice(t('Please configure directories in settings.'));
+      return;
+    }
+
+    if (!fs.existsSync(browserDownloadDirectory)) {
+      new Notice(t('Download directory does not exist.'));
+      return;
+    }
+
+    if (!fs.existsSync(attachmentDirectory)) {
+      fs.mkdirSync(attachmentDirectory, { recursive: true });
+    }
+
+    try {
+      const files = fs.readdirSync(browserDownloadDirectory);
+      const attachmentFiles = files
+        .filter((f: string) => f.toLowerCase().endsWith('.pdf') || f.toLowerCase().endsWith('.epub'))
+        .map((f: string) => {
+          const fullPath = path.join(browserDownloadDirectory, f);
+          return {
+            name: f,
+            path: fullPath,
+            mtime: fs.statSync(fullPath).mtimeMs
+          };
+        })
+        .sort((a: any, b: any) => b.mtime - a.mtime);
+
+      if (attachmentFiles.length === 0) {
+        new Notice(t('No PDF or EPUB files found in download directory.'));
+        return;
+      }
+
+      const latestFile = attachmentFiles[0];
+      const destPath = path.join(attachmentDirectory, latestFile.name);
+
+      fs.copyFileSync(latestFile.path, destPath);
+      
+      await this.plugin.bibManager.updateEntryFile(entry.id, destPath);
+      new Notice(t('Attachment added successfully.'));
+      
+      await this.plugin.bibManager.reinit(true);
+      if (this.mode === 'all') {
+        this.renderAllReferencesList();
+      } else {
+        this.plugin.processReferences();
+      }
+    } catch (e) {
+      console.error('Get attachment failed', e);
+      new Notice(`${t('Failed to get attachment')}: ${e.message}`);
+    }
+  }
+
   convertToBibtex(entry: PartialCSLEntry): string {
     const now = new Date();
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
@@ -528,7 +598,7 @@ export class ReferenceListView extends ItemView {
     if (entry.journal) bib += `  journal = {${entry.journal}},\n`;
     if (entry.doi) bib += `  doi = {${entry.doi}},\n`;
     if (entry.url) bib += `  url = {${entry.url}},\n`;
-    bib += `  add_date = {${timestamp}},\n`;
+    bib += `  add_date = {${timestamp}}\n`;
     bib += `}`;
     return bib;
   }

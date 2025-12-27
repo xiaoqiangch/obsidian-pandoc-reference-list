@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   deepseekApiUrl: 'https://api.deepseek.com/v1',
   deepseekApiKey: '',
   attachmentDirectory: '',
+  browserDownloadDirectory: '',
 };
 
 export interface ZoteroGroup {
@@ -62,6 +63,7 @@ export interface ReferenceListSettings {
   deepseekApiUrl: string;
   deepseekApiKey: string;
   attachmentDirectory: string;
+  browserDownloadDirectory: string;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -461,6 +463,19 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.attachmentDirectory)
           .onChange((value) => {
             this.plugin.settings.attachmentDirectory = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Browser download directory'))
+      .setDesc(t('Directory where your browser downloads files.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('/Users/name/Downloads')
+          .setValue(this.plugin.settings.browserDownloadDirectory)
+          .onChange((value) => {
+            this.plugin.settings.browserDownloadDirectory = value;
             this.plugin.saveSettings();
           })
       );

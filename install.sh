@@ -95,6 +95,11 @@ fi
 cp main.js "$TARGET/"
 echo -e "${GREEN}✓ 已复制 main.js${NC}"
 
+# 5. 激活 Hot Reload
+echo -e "\n${YELLOW}步骤 4: 激活 Hot Reload 功能...${NC}"
+touch "$TARGET/.hotreload"
+echo -e "${GREEN}✓ 已在目标目录创建 .hotreload 文件${NC}"
+
 echo -e "\n${GREEN}======================================${NC}"
 echo -e "${GREEN}安装完成!${NC}"
 echo -e "插件位置: ${BLUE}$TARGET${NC}"

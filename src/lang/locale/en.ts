@@ -79,6 +79,12 @@ export default {
   Bibliography: 'Bibliography',
   Remove: 'Remove',
   'Open attachment': 'Open attachment',
+  'Get attachment': 'Get attachment',
+  'Please configure directories in settings.': 'Please configure directories in settings.',
+  'Download directory does not exist.': 'Download directory does not exist.',
+  'No PDF or EPUB files found in download directory.': 'No PDF or EPUB files found in download directory.',
+  'Attachment added successfully.': 'Attachment added successfully.',
+  'Failed to get attachment': 'Failed to get attachment',
   // src/tooltip.ts
   'No citation found for ': 'No citation found for ',
 
@@ -111,6 +117,8 @@ export default {
   'DeepSeek API URL': 'DeepSeek API URL',
   'DeepSeek API Key': 'DeepSeek API Key',
   'Attachment directory': 'Attachment directory',
+  'Browser download directory': 'Browser download directory',
+  'Directory where your browser downloads files.': 'Directory where your browser downloads files.',
   'No bibliography loaded or engine not initialized.': 'No bibliography loaded or engine not initialized.',
   'No entries to display.': 'No entries to display.',
   'Error rendering bibliography.': 'Error rendering bibliography.',

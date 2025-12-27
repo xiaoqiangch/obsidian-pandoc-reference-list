@@ -8,6 +8,7 @@ import {
   setIcon,
   TFile,
   Notice,
+  FileSystemAdapter,
 } from 'obsidian';
 import which from 'which';
 
@@ -59,10 +60,14 @@ export default class ReferenceList extends Plugin {
     this.initPromise.resolve();
     debugLog('Main', 'initPromise resolved');
 
-    this.registerView(
-      viewType,
-      (leaf: WorkspaceLeaf) => new ReferenceListView(leaf, this)
-    );
+    try {
+      this.registerView(
+        viewType,
+        (leaf: WorkspaceLeaf) => new ReferenceListView(leaf, this)
+      );
+    } catch (e) {
+      console.warn('ReferenceList: View type already registered');
+    }
 
     this.cacheDir = path.join(getVaultRoot(), '.pandoc');
     this.emitter = new Events();
@@ -228,43 +233,49 @@ export default class ReferenceList extends Plugin {
       this.processReferences();
     })();
 
-    this.registerObsidianProtocolHandler('bib-shower-add', async (params) => {
-      const content = params.content;
-      if (!content) return;
+    try {
+      this.registerObsidianProtocolHandler('bib-shower-add', async (params) => {
+        const content = params.content;
+        if (!content) return;
 
-      const view = await this.initLeaf();
-      if (view) {
-        view.processExternalText(content);
-      }
-    });
+        const view = await this.initLeaf();
+        if (view) {
+          view.processExternalText(content);
+        }
+      });
+    } catch (e) {
+      console.warn('ReferenceList: Protocol handler already registered');
+    }
 
     // Hot Reload logic
     this.initHotReload();
   }
 
   initHotReload() {
-    const pluginDir = path.join(
-      (this.app.vault.adapter as any).getBasePath(),
-      this.manifest.dir
-    );
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return;
+
+    const pluginDir = path.join(adapter.getBasePath(), this.manifest.dir);
     const hotReloadFile = path.join(pluginDir, '.hotreload');
-    const mainJsPath = path.join(pluginDir, 'main.js');
 
     if (fs.existsSync(hotReloadFile)) {
-      debugLog('Main', 'Hot reload enabled');
-      fs.watch(mainJsPath, () => {
-        // Use a small delay to ensure the file is fully written
-        setTimeout(async () => {
-          try {
-            // @ts-ignore
-            await this.app.plugins.disablePlugin(this.manifest.id);
-            // @ts-ignore
-            await this.app.plugins.enablePlugin(this.manifest.id);
-            new Notice('Bib Shower: Hot reloaded');
-          } catch (e) {
-            console.error('Hot reload failed', e);
-          }
-        }, 500);
+      console.log('Bib Shower: Hot reload enabled');
+      // Watch the directory instead of the file for better reliability
+      fs.watch(pluginDir, (eventType, filename) => {
+        if (filename === 'main.js' && eventType === 'change') {
+          // Use a larger delay to ensure the file is fully written and Obsidian has time to process
+          setTimeout(async () => {
+            try {
+              // @ts-ignore
+              await this.app.plugins.disablePlugin(this.manifest.id);
+              // @ts-ignore
+              await this.app.plugins.enablePlugin(this.manifest.id);
+              console.log('Bib Shower: Hot reloaded');
+            } catch (e) {
+              console.error('Hot reload failed', e);
+            }
+          }, 1000);
+        }
       });
     }
   }

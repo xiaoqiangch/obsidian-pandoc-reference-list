@@ -30,8 +30,10 @@ import { cite } from '../parser/citeproc';
 import { setCiteKeyCache } from '../editorExtension';
 import equal from 'fast-deep-equal';
 import { t } from '../lang/helpers';
-import path from 'path';
-import { FSWatcher, watch, existsSync, symlinkSync, mkdirSync } from 'fs';
+
+const path = require('path');
+const fs = require('fs');
+
 import crypto from 'crypto';
 
 const fuseSettings = {
@@ -162,6 +164,8 @@ export class BibManager {
   plugin: ReferenceList;
   fileCache: LRUCache<TFile, FileCache>;
   initPromise: PromiseCapability<void>;
+  private reinitTask: Promise<void> | null = null;
+  private pendingClearCache = false;
 
   langCache: Map<string, string> = new Map();
   styleCache: Map<string, string> = new Map();
@@ -216,17 +220,37 @@ export class BibManager {
   }
 
   async reinit(clearCache: boolean) {
-    this.initPromise = new PromiseCapability();
-    this.fileCache.clear();
-    if (clearCache) this.bibCache.clear();
+    if (clearCache) this.pendingClearCache = true;
 
-    if (this.plugin.settings.pullFromZotero) {
-      await this.loadGlobalZBib(false);
-    } else {
-      await this.loadGlobalBibFile(true);
+    if (this.reinitTask) {
+      await this.reinitTask;
+      return;
     }
 
-    this.initPromise.resolve();
+    this.reinitTask = (async () => {
+      const shouldClear = this.pendingClearCache;
+      this.pendingClearCache = false;
+
+      this.initPromise = new PromiseCapability();
+      this.fileCache.clear();
+      if (shouldClear) this.bibCache.clear();
+
+      try {
+        if (this.plugin.settings.pullFromZotero) {
+          await this.loadGlobalZBib(false);
+        } else {
+          await this.loadGlobalBibFile();
+        }
+      } finally {
+        this.initPromise.resolve();
+      }
+    })();
+
+    try {
+      await this.reinitTask;
+    } finally {
+      this.reinitTask = null;
+    }
   }
 
   setFuse(data: PartialCSLEntry[] = []) {
@@ -339,70 +363,72 @@ export class BibManager {
     }
   }
 
-  async loadGlobalBibFile(fromCache?: boolean) {
-    debugLog('BibManager', 'loadGlobalBibFile called', { fromCache });
+  async loadGlobalBibFile() {
+    debugLog('BibManager', 'loadGlobalBibFile called', { bibCacheSize: this.bibCache.size });
     const { settings } = this.plugin;
 
     const bibPaths = [];
     if (settings.pathToBibliography) bibPaths.push(settings.pathToBibliography);
-    if (settings.bibliographyPaths) bibPaths.push(...settings.bibliographyPaths);
+    if (Array.isArray(settings.bibliographyPaths)) {
+      bibPaths.push(...settings.bibliographyPaths);
+    }
 
-    debugLog('BibManager', 'bibPaths', bibPaths);
+    debugLog('BibManager', 'bibPaths to load', bibPaths);
 
     if (bibPaths.length === 0) {
       debugLog('BibManager', 'no bibliography paths configured');
       return;
     }
 
-    if (!fromCache || this.bibCache.size === 0) {
-      this.bibCache = new Map();
-      const allBibEntries: PartialCSLEntry[] = [];
+    console.log('BibManager: loading bib files', bibPaths);
+    const newCache = new Map<string, PartialCSLEntry>();
+    const allBibEntries: PartialCSLEntry[] = [];
 
-      for (const pathToBib of bibPaths) {
-        try {
-          debugLog('BibManager', `loading ${pathToBib}`);
-          const bib = await bibToCSL(
-            pathToBib,
-            settings.pathToPandoc,
-            getVaultRoot,
-            this.plugin.cacheDir
+    for (const pathToBib of bibPaths) {
+      try {
+        debugLog('BibManager', `loading ${pathToBib}`);
+        const bib = await bibToCSL(
+          pathToBib,
+          settings.pathToPandoc,
+          getVaultRoot,
+          this.plugin.cacheDir
+        );
+
+        console.log(`BibManager: loaded ${bib.length} entries from ${pathToBib}`);
+
+        const bibPath = getBibPath(pathToBib, getVaultRoot);
+
+        if (bibPath && !this.watcherCache.has(bibPath)) {
+          let dbTimer = 0;
+          this.watcherCache.set(
+            bibPath,
+            fs.watch(bibPath, (evt: string) => {
+              if (evt === 'change') {
+                clearTimeout(dbTimer);
+                dbTimer = window.setTimeout(() => {
+                  this.reinit(true).then(() => {
+                    this.plugin.processReferences();
+                  });
+                }, 500);
+              } else {
+                this.clearWatcher(bibPath);
+              }
+            })
           );
-
-          debugLog('BibManager', `loaded ${bib.length} entries from ${pathToBib}`);
-
-          const bibPath = getBibPath(pathToBib, getVaultRoot);
-
-          if (bibPath && !this.watcherCache.has(bibPath)) {
-            let dbTimer = 0;
-            this.watcherCache.set(
-              bibPath,
-              watch(bibPath, (evt) => {
-                if (evt === 'change') {
-                  clearTimeout(dbTimer);
-                  dbTimer = window.setTimeout(() => {
-                    this.reinit(true).then(() => {
-                      this.plugin.processReferences();
-                    });
-                  }, 500);
-                } else {
-                  this.clearWatcher(bibPath);
-                }
-              })
-            );
-          }
-
-          for (const entry of bib) {
-            this.bibCache.set(entry.id, entry);
-            allBibEntries.push(entry);
-          }
-        } catch (e) {
-          debugLog('BibManager', `Error loading bibliography file ${pathToBib}`, e);
-          console.error(`Error loading bibliography file ${pathToBib}:`, e);
         }
-      }
 
-      this.setFuse(allBibEntries);
+        for (const entry of bib) {
+          newCache.set(entry.id, entry);
+          allBibEntries.push(entry);
+        }
+      } catch (e) {
+        debugLog('BibManager', `Error loading bibliography file ${pathToBib}`, e);
+        console.error(`Error loading bibliography file ${pathToBib}:`, e);
+      }
     }
+
+    this.bibCache = newCache;
+    this.setFuse(allBibEntries);
 
     const style =
       settings.cslStylePath ||
@@ -748,7 +774,7 @@ export class BibManager {
             let dbTimer = 0;
             this.watcherCache.set(
               bibPath,
-              watch(bibPath, (evt) => {
+              fs.watch(bibPath, (evt: string) => {
                 if (evt === 'change') {
                   clearTimeout(dbTimer);
                   dbTimer = window.setTimeout(() => {
@@ -1008,6 +1034,22 @@ export class BibManager {
               showDetailedTooltip(entry, div);
             });
           });
+
+          // Get Attachment Button
+          const hasAttachment = allAttachmentLinks.length > 0;
+          if (!hasAttachment) {
+            btnContainer.createDiv('clickable-icon', (div) => {
+              setIcon(div, 'download');
+              div.setAttr('aria-label', t('Get attachment'));
+              div.onClickEvent(async (ev) => {
+                ev.stopPropagation();
+                const view = this.plugin.view;
+                if (view) {
+                  await view.getAttachment(entry);
+                }
+              });
+            });
+          }
         }
 
         if (linkDest) {
@@ -1033,7 +1075,7 @@ export class BibManager {
 
         if (allAttachmentLinks.length) {
           allAttachmentLinks.forEach((link) => {
-            if (existsSync(link)) {
+            if (fs.existsSync(link)) {
               btnContainer.createDiv('clickable-icon', (div) => {
                 const isPDF = link.toLowerCase().endsWith('.pdf');
                 setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
@@ -1108,8 +1150,8 @@ export class BibManager {
     const vaultRoot = getVaultRoot();
     const linksDirName = '_bib-links';
     const linksDir = path.join(vaultRoot, linksDirName);
-    if (!existsSync(linksDir)) {
-      mkdirSync(linksDir, { recursive: true });
+    if (!fs.existsSync(linksDir)) {
+      fs.mkdirSync(linksDir, { recursive: true });
     }
 
     const hash = crypto.createHash('md5').update(link).digest('hex');
@@ -1117,9 +1159,9 @@ export class BibManager {
     const fileName = `${path.parse(link).name}_${hash.slice(0, 8)}${ext}`;
     const linkPath = path.join(linksDir, fileName);
 
-    if (!existsSync(linkPath)) {
+    if (!fs.existsSync(linkPath)) {
       try {
-        symlinkSync(link, linkPath, 'file');
+        fs.symlinkSync(link, linkPath, 'file');
       } catch (e) {
         if (e.code !== 'EEXIST') {
           console.error('Failed to create symlink', e);
@@ -1284,5 +1326,40 @@ export class BibManager {
     }
 
     return [];
+  }
+
+  async updateEntryFile(citekey: string, attachmentPath: string) {
+    const entry = this.bibCache.get(citekey);
+    if (!entry || !entry.sourceFile) {
+      throw new Error('Entry not found or source file unknown.');
+    }
+
+    const bibPath = entry.sourceFile;
+    let content = fs.readFileSync(bibPath, 'utf-8');
+    
+    const entryRegex = new RegExp(`(@\\w+\\s*\\{\\s*${citekey}\\s*,[\\s\\S]*?\\n\\})`, 'g');
+    const match = entryRegex.exec(content);
+    
+    if (match) {
+      let entryBlock = match[1];
+      const fileFieldRegex = /file\s*=\s*[\{\"]([^\"\}]*)[\}\"]/i;
+      
+      if (fileFieldRegex.test(entryBlock)) {
+        entryBlock = entryBlock.replace(fileFieldRegex, `file = {${attachmentPath}}`);
+      } else {
+        // Add new file field before the closing brace, ensuring exactly one comma
+        let newBlock = entryBlock.trim().replace(/\}\s*$/, '').trim();
+        // Remove any existing trailing commas (handles previous corruption)
+        newBlock = newBlock.replace(/,+$/, '');
+        // Add exactly one comma and the new field
+        newBlock += `,\n  file = {${attachmentPath}}\n}`;
+        entryBlock = newBlock;
+      }
+      
+      content = content.replace(match[1], entryBlock);
+      fs.writeFileSync(bibPath, content, 'utf-8');
+    } else {
+      throw new Error('Could not find entry block in bib file.');
+    }
   }
 }
