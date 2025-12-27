@@ -1148,8 +1148,19 @@ export class BibManager {
 
   async openExternalFileInternal(link: string) {
     const vaultRoot = getVaultRoot();
-    const linksDirName = '_bib-links';
+    const linksDirName = '.bib-links';
+    const oldLinksDirName = '_bib-links';
     const linksDir = path.join(vaultRoot, linksDirName);
+    const oldLinksDir = path.join(vaultRoot, oldLinksDirName);
+
+    if (fs.existsSync(oldLinksDir) && !fs.existsSync(linksDir)) {
+      try {
+        fs.renameSync(oldLinksDir, linksDir);
+      } catch (e) {
+        console.error('Failed to rename old bib-links directory', e);
+      }
+    }
+
     if (!fs.existsSync(linksDir)) {
       fs.mkdirSync(linksDir, { recursive: true });
     }
