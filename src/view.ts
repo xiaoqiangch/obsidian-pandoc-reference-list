@@ -14,6 +14,7 @@ export class ReferenceListView extends ItemView {
   activeMarkdownLeaf: MarkdownView;
   mode: 'current' | 'all' = 'current';
   searchQuery = '';
+  isRecentOnly = false;
   showAddSection = false;
   isProcessing = false;
   pendingEntries: PartialCSLEntry[] = [];
@@ -92,20 +93,33 @@ export class ReferenceListView extends ItemView {
       });
     });
 
-    if (this.mode === 'all') {
-      // Add Reference Button
-      actionsContainer.createDiv({
-        cls: 'clickable-icon',
-        attr: { 'aria-label': t('Add Reference') }
-      }, (btn) => {
-        setIcon(btn, 'plus');
-        btn.onClickEvent(() => {
-          this.showAddSection = !this.showAddSection;
-          this.pendingEntries = [];
-          this.renderAllReferencesList();
-        });
+    // Sort by Date Button
+    actionsContainer.createDiv({
+      cls: 'clickable-icon',
+      attr: { 'aria-label': t('Show recently added') }
+    }, (btn) => {
+      setIcon(btn, 'history');
+      btn.toggleClass('is-active', this.isRecentOnly);
+      btn.onClickEvent(() => {
+        this.isRecentOnly = !this.isRecentOnly;
+        this.mode = 'all'; 
+        this.setViewContent(null);
       });
-    }
+    });
+
+    // Add Reference Button
+    actionsContainer.createDiv({
+      cls: 'clickable-icon',
+      attr: { 'aria-label': t('Add Reference') }
+    }, (btn) => {
+      setIcon(btn, 'plus');
+      btn.onClickEvent(() => {
+        this.showAddSection = !this.showAddSection;
+        this.mode = 'all';
+        this.pendingEntries = [];
+        this.setViewContent(null);
+      });
+    });
 
     const activeFile = this.plugin.app.workspace.getActiveFile() || this.plugin.lastActiveFile;
     const count = this.mode === 'current'
@@ -153,11 +167,14 @@ export class ReferenceListView extends ItemView {
   }
 
   async processExternalText(text: string) {
+    console.log('processExternalText: started', { textLength: text.length });
     this.mode = 'all';
     this.showAddSection = true;
     this.pendingEntries = [];
     this.isProcessing = true;
-    this.renderAllReferencesList();
+    
+    // Re-render the entire view to ensure header and mode are correct
+    this.setViewContent(null);
 
     try {
       if (!this.plugin.settings.deepseekApiKey) {
@@ -171,8 +188,10 @@ export class ReferenceListView extends ItemView {
         this.plugin.settings.deepseekApiUrl,
         this.plugin.settings.deepseekApiKey
       );
+      console.log('processExternalText: entries received', this.pendingEntries.length);
       this.selectedEntries = new Set(this.pendingEntries.map((_, i) => i));
     } catch (e) {
+      console.error('processExternalText: error', e);
       new Notice(e.message);
     } finally {
       this.isProcessing = false;
@@ -196,7 +215,20 @@ export class ReferenceListView extends ItemView {
     if (this.showAddSection) {
       const addSection = listContainer.createDiv({ cls: 'pwc-add-section' });
       
-      if (this.pendingEntries.length === 0) {
+      if (this.isProcessing && this.pendingEntries.length === 0) {
+        addSection.createDiv({ cls: 'pwc-processing-container' }, (div) => {
+          setIcon(div, 'loader');
+          div.createDiv({ text: t('Processing...') });
+        });
+        
+        const btnContainer = addSection.createDiv({ cls: 'pwc-modal-buttons' });
+        const cancelBtn = btnContainer.createEl('button', { text: t('Cancel') });
+        cancelBtn.addEventListener('click', () => {
+          this.isProcessing = false;
+          this.showAddSection = false;
+          this.renderAllReferencesList();
+        });
+      } else if (this.pendingEntries.length === 0) {
         const textarea = addSection.createEl('textarea', { 
           attr: { placeholder: t('Paste text or URL here...') },
           cls: 'pwc-add-textarea'
@@ -284,6 +316,15 @@ export class ReferenceListView extends ItemView {
             (entry.author && entry.author.some(a => a.family?.toLowerCase().includes(this.searchQuery) || a.given?.toLowerCase().includes(this.searchQuery)))
         )
         : this.allEntries;
+
+    if (this.isRecentOnly) {
+        this.filteredEntries = this.filteredEntries.filter(entry => !!entry.addDate);
+        this.filteredEntries.sort((a, b) => {
+            const dateA = a.addDate || '';
+            const dateB = b.addDate || '';
+            return dateB.localeCompare(dateA);
+        });
+    }
 
     debugLog('View', 'renderAllReferencesList state', { 
         hasEngine: !!this.plugin.bibManager.engine, 
@@ -471,26 +512,38 @@ export class ReferenceListView extends ItemView {
   }
 
   convertToBibtex(entry: PartialCSLEntry): string {
+    const now = new Date();
+    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    
     let bib = `@article{${entry.id},\n`;
     bib += `  title = {${entry.title}},\n`;
     if (entry.author) {
-        const authors = entry.author.map(a => `${a.family}, ${a.given}`).join(' and ');
+        const authors = entry.author.map(a => {
+            if (a.family && a.given) return `${a.family}, ${a.given}`;
+            return a.family || a.given || '';
+        }).filter(name => name !== '').join(' and ');
         bib += `  author = {${authors}},\n`;
     }
     if (entry.year) bib += `  year = {${entry.year}},\n`;
     if (entry.journal) bib += `  journal = {${entry.journal}},\n`;
     if (entry.doi) bib += `  doi = {${entry.doi}},\n`;
     if (entry.url) bib += `  url = {${entry.url}},\n`;
+    bib += `  add_date = {${timestamp}},\n`;
     bib += `}`;
     return bib;
   }
 
   setNoContentMessage() {
-    this.setMessage(t('No citations found in the current document.'));
+    if (this.mode === 'current') {
+      this.setViewContent(null);
+    }
   }
 
   setMessage(message: string) {
-    this.contentEl.createDiv({
+    this.contentEl.empty();
+    this.renderHeader();
+    const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
+    container.createDiv({
       cls: 'pane-empty',
       text: message,
     });

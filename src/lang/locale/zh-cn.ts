@@ -119,4 +119,5 @@ export default {
   'Click the button to copy the bookmarklet to your clipboard. You can then add it as a bookmark in Safari or Edge.': '点击按钮将书签脚本复制到剪贴板。然后您可以将其添加为 Safari 或 Edge 中的书签。',
   'Copy Bookmarklet': '复制书签脚本',
   'Bookmarklet copied to clipboard!': '书签脚本已复制到剪贴板！',
+  'Show recently added': '显示最近添加',
 };

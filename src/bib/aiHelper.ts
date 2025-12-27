@@ -2,8 +2,18 @@ import { requestUrl } from 'obsidian';
 import { PartialCSLEntry } from './types';
 
 export async function callDeepSeek(text: string, apiUrl: string, apiKey: string): Promise<PartialCSLEntry[]> {
+    console.log('callDeepSeek: started', { textLength: text.length, apiUrl });
     if (!apiKey) {
         throw new Error('Please configure DeepSeek API Key in settings.');
+    }
+
+    // Ensure apiUrl doesn't end with a slash and handle missing /v1
+    let normalizedUrl = apiUrl.trim().replace(/\/+$/, '');
+    if (!normalizedUrl.endsWith('/v1') && !normalizedUrl.includes('/v1/')) {
+        // If it's just the base domain, add /v1
+        if (normalizedUrl.includes('api.deepseek.com') && !normalizedUrl.endsWith('/v1')) {
+            normalizedUrl += '/v1';
+        }
     }
 
     const prompt = `你是一个参考文献专家。请将以下文本内容转换为 BibTeX 格式。
@@ -14,37 +24,52 @@ export async function callDeepSeek(text: string, apiUrl: string, apiKey: string)
 文本内容：
 ${text}`;
 
-    const response = await requestUrl({
-        url: `${apiUrl}/chat/completions`,
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [
-                { role: "system", content: "You are a helpful assistant that converts text to BibTeX." },
-                { role: "user", content: prompt }
-            ],
-            temperature: 0
-        })
-    });
+    try {
+        const response = await requestUrl({
+            url: `${normalizedUrl}/chat/completions`,
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: "deepseek-chat",
+                messages: [
+                    { role: "system", content: "You are a helpful assistant that converts text to BibTeX." },
+                    { role: "user", content: prompt }
+                ],
+                temperature: 0
+            })
+        });
 
-    const content = response.json.choices[0].message.content;
-    return parseBibtexFromText(content);
+        console.log('callDeepSeek: response received', response.status);
+        const content = response.json.choices[0].message.content;
+        console.log('callDeepSeek: content', content);
+        const entries = parseBibtexFromText(content);
+        console.log('callDeepSeek: parsed entries', entries.length);
+        return entries;
+    } catch (e) {
+        console.error('callDeepSeek: error', e);
+        throw e;
+    }
 }
 
 export function parseBibtexFromText(text: string): PartialCSLEntry[] {
     const entries: PartialCSLEntry[] = [];
-    const cleanedText = text.replace(/%.*$/gm, '');
+    // Remove markdown code blocks if present
+    // Don't aggressively remove % as it might be part of the content (e.g., "34%")
+    const cleanedText = text.replace(/```(?:bibtex)?/g, '').replace(/```/g, '');
     const entryRegex = /@(\w+)\s*{\s*([^,]+),/g;
     let match;
+
+    console.log('parseBibtexFromText: cleaned text length', cleanedText.length);
 
     while ((match = entryRegex.exec(cleanedText)) !== null) {
         const type = match[1].toLowerCase();
         const key = match[2].trim();
         const startIndex = match.index;
+        
+        console.log('parseBibtexFromText: found entry', { type, key, startIndex });
         
         let depth = 1;
         let endIndex = -1;
@@ -91,6 +116,7 @@ export function parseBibtexFromText(text: string): PartialCSLEntry[] {
             entry.publisher = extractField(body, 'publisher');
 
             entries.push(entry);
+            console.log('parseBibtexFromText: added entry', entry.id);
         }
     }
 

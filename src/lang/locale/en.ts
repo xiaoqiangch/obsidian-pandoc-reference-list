@@ -133,4 +133,5 @@ export default {
   'Click the button to copy the bookmarklet to your clipboard. You can then add it as a bookmark in Safari or Edge.': 'Click the button to copy the bookmarklet to your clipboard. You can then add it as a bookmark in Safari or Edge.',
   'Copy Bookmarklet': 'Copy Bookmarklet',
   'Bookmarklet copied to clipboard!': 'Bookmarklet copied to clipboard!',
+  'Show recently added': 'Show recently added',
 };

@@ -19,6 +19,7 @@ export interface PartialCSLEntry {
   groupID?: number;
   line?: number;
   sourceFile?: string;
+  addDate?: string;
 }
 
 export type CSLList = PartialCSLEntry[];

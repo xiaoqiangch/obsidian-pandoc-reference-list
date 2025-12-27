@@ -134,6 +134,12 @@ export async function bibToCSL(
             const existing = extraMap.get(currentEntry.id);
             extraMap.set(currentEntry.id, { ...existing, file: fileMatch[1].trim() });
           }
+          const dateMatch = line.match(/add_date\s*=\s*[\{\"]([^\"\}]+)[\}\"]/i);
+          if (dateMatch) {
+            const existing = extraMap.get(currentEntry.id);
+            (existing as any).addDate = dateMatch[1].trim();
+            extraMap.set(currentEntry.id, existing);
+          }
         }
       }
 
@@ -142,6 +148,7 @@ export async function bibToCSL(
           const extra = extraMap.get(entry.id);
           entry.file = extra.file;
           entry.line = extra.line;
+          entry.addDate = (extra as any).addDate;
           entry.sourceFile = bibPath;
         }
         
