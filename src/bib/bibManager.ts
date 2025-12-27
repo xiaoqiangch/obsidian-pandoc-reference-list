@@ -979,7 +979,7 @@ export class BibManager {
       const target = e.querySelector('.csl-right-inline') || e;
       const btnContainer = target.createSpan({ cls: 'pwc-entry-btns' });
 
-      const citekey = e.dataset.citekey || metadata.entry_ids?.[i]?.[0];
+      const citekey = e.dataset.citekey;
       if (citekey) {
         const zLink = this.zCitekeyToLinks.get(citekey);
         let linkText = '@' + citekey;
@@ -1084,57 +1084,7 @@ export class BibManager {
                   t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : 'EPUB'))
                 );
                 div.onClickEvent(async () => {
-                  const vaultRoot = getVaultRoot();
-                  let relativePath = '';
-                  let isInsideVault = false;
-
-                  if (link.startsWith(vaultRoot)) {
-                    isInsideVault = true;
-                    relativePath = link
-                      .substring(vaultRoot.length)
-                      .replace(/^[\\\/]/, '');
-                  }
-
-                  if (isInsideVault) {
-                    const tfile = app.vault.getAbstractFileByPath(relativePath);
-                    if (tfile instanceof TFile) {
-                      const leaf = app.workspace.getRightLeaf(false);
-                      await leaf.openFile(tfile);
-                      
-                      if (isPDF) {
-                        // Attempt to enable annotation mode and show tools
-                        setTimeout(() => {
-                          const view = leaf.view as any;
-                          if (view.type === 'pdf') {
-                            if (view.viewer) {
-                              if (view.viewer.then) {
-                                view.viewer.then((v: any) => {
-                                  if (v && v.setAnnotationMode) v.setAnnotationMode(true);
-                                });
-                              } else if (view.viewer.setAnnotationMode) {
-                                view.viewer.setAnnotationMode(true);
-                              }
-                            }
-                            
-                            const toolbar = view.contentEl.querySelector('.pdf-toolbar');
-                            if (toolbar) {
-                              toolbar.style.display = 'flex';
-                              const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
-                              if (annotateBtn && !annotateBtn.hasClass('is-active')) {
-                                annotateBtn.click();
-                              }
-                            }
-                          }
-                        }, 1000);
-                      }
-
-                      app.workspace.revealLeaf(leaf);
-                      return;
-                    }
-                  }
-
-                  // For external files, use virtual link (symlink) to open in Obsidian
-                  await this.openExternalFileInternal(link);
+                  await this.openAttachment(link);
                 });
               });
             }
@@ -1146,20 +1096,64 @@ export class BibManager {
     return parsed;
   }
 
-  async openExternalFileInternal(link: string) {
+  async openAttachment(link: string) {
     const vaultRoot = getVaultRoot();
-    const linksDirName = '.bib-links';
-    const oldLinksDirName = '_bib-links';
-    const linksDir = path.join(vaultRoot, linksDirName);
-    const oldLinksDir = path.join(vaultRoot, oldLinksDirName);
+    let relativePath = '';
+    let isInsideVault = false;
 
-    if (fs.existsSync(oldLinksDir) && !fs.existsSync(linksDir)) {
-      try {
-        fs.renameSync(oldLinksDir, linksDir);
-      } catch (e) {
-        console.error('Failed to rename old bib-links directory', e);
+    if (link.startsWith(vaultRoot)) {
+      isInsideVault = true;
+      relativePath = link
+        .substring(vaultRoot.length)
+        .replace(/^[\\\/]/, '');
+    }
+
+    if (isInsideVault) {
+      const tfile = app.vault.getAbstractFileByPath(relativePath);
+      if (tfile instanceof TFile) {
+        const leaf = app.workspace.getRightLeaf(false);
+        await leaf.openFile(tfile);
+        
+        if (link.toLowerCase().endsWith('.pdf')) {
+          // Attempt to enable annotation mode and show tools
+          setTimeout(() => {
+            const view = leaf.view as any;
+            if (view.type === 'pdf') {
+              if (view.viewer) {
+                if (view.viewer.then) {
+                  view.viewer.then((v: any) => {
+                    if (v && v.setAnnotationMode) v.setAnnotationMode(true);
+                  });
+                } else if (view.viewer.setAnnotationMode) {
+                  view.viewer.setAnnotationMode(true);
+                }
+              }
+              
+              const toolbar = view.contentEl.querySelector('.pdf-toolbar');
+              if (toolbar) {
+                toolbar.style.display = 'flex';
+                const annotateBtn = toolbar.querySelector('.pdf-toolbar-button.annotate') as HTMLElement;
+                if (annotateBtn && !annotateBtn.hasClass('is-active')) {
+                  annotateBtn.click();
+                }
+              }
+            }
+          }, 1000);
+        }
+
+        app.workspace.revealLeaf(leaf);
+        return;
       }
     }
+
+    // For external files, use virtual link (symlink) to open in Obsidian
+    await this.openExternalFileInternal(link);
+  }
+
+  async openExternalFileInternal(link: string) {
+    const vaultRoot = getVaultRoot();
+    const linksDirName = '_bib-links';
+    const linksDir = path.join(vaultRoot, linksDirName);
 
     if (!fs.existsSync(linksDir)) {
       fs.mkdirSync(linksDir, { recursive: true });
@@ -1181,6 +1175,13 @@ export class BibManager {
           return;
         }
       }
+    }
+
+    // Force Obsidian to scan the folder
+    try {
+      await app.vault.adapter.list(linksDirName);
+    } catch (e) {
+      // Ignore error if folder doesn't exist yet in adapter
     }
 
     // Wait for Obsidian to see the file
@@ -1228,6 +1229,7 @@ export class BibManager {
       app.workspace.revealLeaf(leaf);
     } else {
       // If Obsidian still doesn't see it, try opening via shell
+      console.log(`[BibShower] File not found in vault index after 3s: ${linksDirName}/${fileName}. Falling back to external reader.`);
       require('electron').shell.openPath(link);
     }
   }

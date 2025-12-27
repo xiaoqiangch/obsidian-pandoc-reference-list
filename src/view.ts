@@ -478,7 +478,7 @@ export class ReferenceListView extends ItemView {
                                 btnContainer.createDiv('clickable-icon', (div) => {
                                     setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
                                     div.setAttr('aria-label', t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop()));
-                                    div.onClickEvent(() => this.plugin.bibManager.openExternalFileInternal(link));
+                                    div.onClickEvent(() => this.plugin.bibManager.openAttachment(link));
                                 });
                             }
                         });
