@@ -464,5 +464,17 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName(t('Browser Bookmarklet'))
+      .setDesc(t('Click the button to copy the bookmarklet to your clipboard. You can then add it as a bookmark in Safari or Edge.'))
+      .addButton((btn) => {
+        btn.setButtonText(t('Copy Bookmarklet')).onClick(async () => {
+          const vaultName = encodeURIComponent(this.app.vault.getName());
+          const bookmarklet = `javascript:(function(){var title=document.title;var url=window.location.href;var selection=window.getSelection().toString()||document.body.innerText.substring(0,2000);var content="Title: "+title+"\\nURL: "+url+"\\n\\nContent: "+selection;var obsidianUrl="obsidian://bib-shower-add?vault=${vaultName}&content="+encodeURIComponent(content);window.location.href=obsidianUrl;})();`;
+          await navigator.clipboard.writeText(bookmarklet);
+          new Notice(t('Bookmarklet copied to clipboard!'));
+        });
+      });
   }
 }

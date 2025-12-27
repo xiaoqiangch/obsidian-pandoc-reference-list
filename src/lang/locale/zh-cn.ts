@@ -92,6 +92,7 @@ export default {
   'DeepSeek API URL': 'DeepSeek API 地址',
   'DeepSeek API Key': 'DeepSeek API 密钥',
   'Attachment directory': '附件目录',
+  'Directory where PDF attachments are stored.': '存储 PDF 附件的目录。',
   'No bibliography loaded or engine not initialized.': '未加载文献库或引擎未初始化。',
   'No entries to display.': '没有可显示的条目。',
   'Error rendering bibliography.': '渲染文献库时出错。',
@@ -114,4 +115,8 @@ export default {
   'Cancel': '取消',
   'Show details': '显示详情',
   'Copy citekey': '复制引用键',
+  'Browser Bookmarklet': '浏览器书签脚本',
+  'Click the button to copy the bookmarklet to your clipboard. You can then add it as a bookmark in Safari or Edge.': '点击按钮将书签脚本复制到剪贴板。然后您可以将其添加为 Safari 或 Edge 中的书签。',
+  'Copy Bookmarklet': '复制书签脚本',
+  'Bookmarklet copied to clipboard!': '书签脚本已复制到剪贴板！',
 };

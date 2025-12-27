@@ -152,6 +152,34 @@ export class ReferenceListView extends ItemView {
     }
   }
 
+  async processExternalText(text: string) {
+    this.mode = 'all';
+    this.showAddSection = true;
+    this.pendingEntries = [];
+    this.isProcessing = true;
+    this.renderAllReferencesList();
+
+    try {
+      if (!this.plugin.settings.deepseekApiKey) {
+        new Notice(t('Please configure DeepSeek API Key in settings.'));
+        this.isProcessing = false;
+        this.renderAllReferencesList();
+        return;
+      }
+      this.pendingEntries = await callDeepSeek(
+        text,
+        this.plugin.settings.deepseekApiUrl,
+        this.plugin.settings.deepseekApiKey
+      );
+      this.selectedEntries = new Set(this.pendingEntries.map((_, i) => i));
+    } catch (e) {
+      new Notice(e.message);
+    } finally {
+      this.isProcessing = false;
+      this.renderAllReferencesList();
+    }
+  }
+
   async renderAllReferences() {
     this.setViewContent(null);
   }

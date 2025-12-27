@@ -226,6 +226,16 @@ export default class ReferenceList extends Plugin {
       this.setStatusBarIdle();
       this.processReferences();
     })();
+
+    this.registerObsidianProtocolHandler('bib-shower-add', async (params) => {
+      const content = params.content;
+      if (!content) return;
+
+      const view = await this.initLeaf();
+      if (view) {
+        view.processExternalText(content);
+      }
+    });
   }
 
   onunload() {
