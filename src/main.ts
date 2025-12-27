@@ -31,6 +31,7 @@ import path from 'path';
 import { BibManager } from './bib/bibManager';
 import { CiteSuggest } from './citeSuggest/citeSuggest';
 import { isZoteroRunning } from './bib/helpers';
+import * as fs from 'fs';
 
 export default class ReferenceList extends Plugin {
   settings: ReferenceListSettings;
@@ -236,6 +237,36 @@ export default class ReferenceList extends Plugin {
         view.processExternalText(content);
       }
     });
+
+    // Hot Reload logic
+    this.initHotReload();
+  }
+
+  initHotReload() {
+    const pluginDir = path.join(
+      (this.app.vault.adapter as any).getBasePath(),
+      this.manifest.dir
+    );
+    const hotReloadFile = path.join(pluginDir, '.hotreload');
+    const mainJsPath = path.join(pluginDir, 'main.js');
+
+    if (fs.existsSync(hotReloadFile)) {
+      debugLog('Main', 'Hot reload enabled');
+      fs.watch(mainJsPath, () => {
+        // Use a small delay to ensure the file is fully written
+        setTimeout(async () => {
+          try {
+            // @ts-ignore
+            await this.app.plugins.disablePlugin(this.manifest.id);
+            // @ts-ignore
+            await this.app.plugins.enablePlugin(this.manifest.id);
+            new Notice('Bib Shower: Hot reloaded');
+          } catch (e) {
+            console.error('Hot reload failed', e);
+          }
+        }, 500);
+      });
+    }
   }
 
   onunload() {
