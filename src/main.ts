@@ -168,8 +168,8 @@ export default class ReferenceList extends Plugin {
               this.processReferences();
             }
           },
-          100,
-          true
+          500,
+          false
         )
       )
     );
@@ -398,6 +398,24 @@ export default class ReferenceList extends Plugin {
     debugLog('Main', 'processReferences started');
     const { settings, view } = this;
 
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = activeView?.file || this.lastActiveFile;
+
+    let bib: HTMLElement | null = null;
+
+    if (file) {
+      debugLog('Main', 'file found', file.path);
+      try {
+        const fileContent = await this.app.vault.cachedRead(file);
+        debugLog('Main', 'fileContent read', { length: fileContent.length });
+        bib = await this.bibManager.getReferenceList(file, fileContent);
+        debugLog('Main', 'getReferenceList finished', { hasBib: !!bib });
+      } catch (e) {
+        debugLog('Main', 'error in processReferences', e);
+        console.error(e);
+      }
+    }
+
     if (view && view.mode === 'all') {
       view.setViewContent(null);
       return;
@@ -412,34 +430,20 @@ export default class ReferenceList extends Plugin {
       );
     }
 
-    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    const file = activeView?.file || this.lastActiveFile;
-
     if (file) {
-      debugLog('Main', 'file found', file.path);
-      try {
-        const fileContent = await this.app.vault.cachedRead(file);
-        debugLog('Main', 'fileContent read', { length: fileContent.length });
-        const bib = await this.bibManager.getReferenceList(file, fileContent);
-        debugLog('Main', 'getReferenceList finished', { hasBib: !!bib });
-        const cache = this.bibManager.fileCache.get(file);
-
-        if (
-          !bib &&
-          cache?.source === this.bibManager &&
-          settings.pullFromZotero &&
-          !(await isZoteroRunning(settings.zoteroPort)) &&
-          this.bibManager.fileCache.get(file)?.keys.size
-        ) {
-          debugLog('Main', 'cannot connect to Zotero');
-          view?.setMessage(t('Cannot connect to Zotero'));
-        } else {
-          debugLog('Main', 'setting view content');
-          view?.setViewContent(bib);
-        }
-      } catch (e) {
-        debugLog('Main', 'error in processReferences', e);
-        console.error(e);
+      const cache = this.bibManager.fileCache.get(file);
+      if (
+        !bib &&
+        cache?.source === this.bibManager &&
+        settings.pullFromZotero &&
+        !(await isZoteroRunning(settings.zoteroPort)) &&
+        this.bibManager.fileCache.get(file)?.keys.size
+      ) {
+        debugLog('Main', 'cannot connect to Zotero');
+        view?.setMessage(t('Cannot connect to Zotero'));
+      } else {
+        debugLog('Main', 'setting view content');
+        view?.setViewContent(bib);
       }
     } else {
       debugLog('Main', 'no activeView or lastActiveFile found');
@@ -451,7 +455,7 @@ export default class ReferenceList extends Plugin {
 
   processReferencesDebounced = debounce(
     this.processReferences.bind(this),
-    250,
-    true
+    500,
+    false
   );
 }
