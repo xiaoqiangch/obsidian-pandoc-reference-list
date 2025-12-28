@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 增强版安装脚本 for Pandoc Reference List Obsidian 插件
+# 增强版安装脚本 for Bib Manager Obsidian 插件
 # 目标仓库: ../testBrain
 # 功能：检查依赖、自动编译、安装插件
 
@@ -11,7 +11,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}开始安装 Pandoc Reference List 插件...${NC}"
+echo -e "${BLUE}开始安装 Bib Manager 插件...${NC}"
 
 # 1. 检查环境依赖
 echo -e "\n${YELLOW}步骤 1: 检查环境依赖...${NC}"
@@ -76,7 +76,7 @@ echo -e "${GREEN}✓ 编译成功，已生成 main.js${NC}"
 echo -e "\n${YELLOW}步骤 3: 安装到 Obsidian 仓库...${NC}"
 
 # 目标目录
-TARGET="../testBrain/.obsidian/plugins/bib-shower-obsidian"
+TARGET="../testBrain/.obsidian/plugins/bib-manager-obsidian"
 
 echo "目标目录: $TARGET"
 
@@ -101,6 +101,6 @@ echo -e "${GREEN}安装完成!${NC}"
 echo -e "插件位置: ${BLUE}$TARGET${NC}"
 echo -e "\n${YELLOW}后续操作:${NC}"
 echo -e "1. 打开 Obsidian 仓库 '${BLUE}../testBrain${NC}'"
-echo -e "2. 设置 → 社区插件 → 启用 '${BLUE}Pandoc Reference List${NC}'"
+echo -e "2. 设置 → 社区插件 → 启用 '${BLUE}Bib Manager${NC}'"
 echo -e "3. 如果插件已启用，请在插件列表中点击刷新或重启 Obsidian"
 echo -e "${GREEN}======================================${NC}"

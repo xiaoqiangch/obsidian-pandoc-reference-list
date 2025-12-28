@@ -486,7 +486,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       .addButton((btn) => {
         btn.setButtonText(t('Copy Bookmarklet')).onClick(async () => {
           const vaultName = encodeURIComponent(this.app.vault.getName());
-          const bookmarklet = `javascript:(function(){var title=document.title;var url=window.location.href;var selection=window.getSelection().toString()||document.body.innerText.substring(0,2000);var content="Title: "+title+"\\nURL: "+url+"\\n\\nContent: "+selection;var obsidianUrl="obsidian://bib-shower-add?vault=${vaultName}&content="+encodeURIComponent(content);window.location.href=obsidianUrl;})();`;
+          const bookmarklet = `javascript:(function(){var title=document.title;var url=window.location.href;var selection=window.getSelection().toString()||document.body.innerText.substring(0,2000);var content="Title: "+title+"\\nURL: "+url+"\\n\\nContent: "+selection;var obsidianUrl="obsidian://bib-manager-add?vault=${vaultName}&content="+encodeURIComponent(content);window.location.href=obsidianUrl;})();`;
           await navigator.clipboard.writeText(bookmarklet);
           new Notice(t('Bookmarklet copied to clipboard!'));
         });

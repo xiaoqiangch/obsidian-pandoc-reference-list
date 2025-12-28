@@ -1,6 +1,6 @@
-# Pandoc Reference List 插件安装脚本
+# Bib Manager 插件安装脚本
 
-为 Obsidian 插件 "Pandoc Reference List" 提供的 macOS 安装脚本。
+为 Obsidian 插件 "Bib Manager" 提供的 macOS 安装脚本。
 
 ## 脚本说明
 
@@ -57,7 +57,7 @@ chmod +x install.sh
 1. 打开 Obsidian
 2. 打开仓库 `../testBrain`
 3. 进入设置 → 社区插件
-4. 找到 "Pandoc Reference List" 并启用
+4. 找到 "Bib Manager" 并启用
 5. 可能需要重启 Obsidian
 
 ## 注意事项

@@ -54,8 +54,8 @@ export default {
   'Include [[@pandoc]] citations in the reference list and format them as inline citations in live preview mode.':
     'Include [[@pandoc]] citations in the reference list and format them as inline citations in live preview mode.',
   // src/view.ts
-  'Please provide the path to pandoc in the Bib Shower plugin settings.':
-    'Please provide the path to pandoc in the Bib Shower plugin settings.',
+  'Please provide the path to pandoc in the Bib Manager plugin settings.':
+    'Please provide the path to pandoc in the Bib Manager plugin settings.',
   'Click to copy': 'Click to copy',
   'Copy list': 'Copy list',
   'No citations found in the current document.':
@@ -69,10 +69,10 @@ export default {
   'Start Zotero and try again.': 'Start Zotero and try again.',
   'Libraries to include in bibliography':
     'Libraries to include in bibliography',
-  'Please provide the path to your pandoc compatible bibliography file in the Bib Shower plugin settings.':
-    'Please provide the path to your pandoc compatible bibliography file in the Bib Shower plugin settings.',
+  'Please provide the path to your pandoc compatible bibliography file in the Bib Manager plugin settings.':
+    'Please provide the path to your pandoc compatible bibliography file in the Bib Manager plugin settings.',
   'Refresh bibliography': 'Refresh bibliography',
-  'Pandoc reference list settings': 'Bib Shower settings',
+  'Bib Manager settings': 'Bib Manager settings',
   'Additional bibliography files': 'Additional bibliography files',
   'Add more bibliography files to be searched.': 'Add more bibliography files to be searched.',
   Add: 'Add',

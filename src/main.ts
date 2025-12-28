@@ -234,7 +234,7 @@ export default class ReferenceList extends Plugin {
     })();
 
     try {
-      this.registerObsidianProtocolHandler('bib-shower-add', async (params) => {
+      this.registerObsidianProtocolHandler('bib-manager-add', async (params) => {
         const content = params.content;
         if (!content) return;
 
@@ -259,7 +259,7 @@ export default class ReferenceList extends Plugin {
     const hotReloadFile = path.join(pluginDir, '.hotreload');
 
     if (fs.existsSync(hotReloadFile)) {
-      console.log('Bib Shower: Hot reload enabled');
+      console.log('Bib Manager: Hot reload enabled');
       // Watch the directory instead of the file for better reliability
       fs.watch(pluginDir, (eventType, filename) => {
         if (filename === 'main.js' && eventType === 'change') {
@@ -270,7 +270,7 @@ export default class ReferenceList extends Plugin {
               await this.app.plugins.disablePlugin(this.manifest.id);
               // @ts-ignore
               await this.app.plugins.enablePlugin(this.manifest.id);
-              console.log('Bib Shower: Hot reloaded');
+              console.log('Bib Manager: Hot reloaded');
             } catch (e) {
               console.error('Hot reload failed', e);
             }
@@ -292,7 +292,7 @@ export default class ReferenceList extends Plugin {
   initStatusBar() {
     const ico = (this.statusBarIcon = this.addStatusBarItem());
     ico.addClass('pwc-status-icon', 'clickable-icon');
-    ico.setAttr('aria-label', t('Pandoc reference list settings'));
+    ico.setAttr('aria-label', t('Bib Manager settings'));
     ico.setAttr('data-tooltip-position', 'top');
     this.setStatusBarIdle();
     let isOpen = false;
@@ -477,7 +477,7 @@ export default class ReferenceList extends Plugin {
       debugLog('Main', 'no bibliography configured');
       return view?.setMessage(
         t(
-          'Please provide the path to your pandoc compatible bibliography file in the Bib Shower plugin settings.'
+          'Please provide the path to your pandoc compatible bibliography file in the Bib Manager plugin settings.'
         )
       );
     }

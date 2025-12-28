@@ -1,10 +1,10 @@
-# Bib Shower (Obsidian Plugin)
+# Bib Manager (Obsidian Plugin)
 
-**Bib Shower** 是一个基于 [Pandoc Reference List](https://github.com/mgmeyers/obsidian-pandoc-reference-list) 增强开发的 Obsidian 插件。它可以在侧边栏中为当前文档中的每个 Pandoc 引用键（citekey）显示格式化后的参考文献。
+**Bib Manager** 是一个基于 [Pandoc Reference List](https://github.com/mgmeyers/obsidian-pandoc-reference-list) 增强开发的 Obsidian 插件。它可以在侧边栏中为当前文档中的每个 Pandoc 引用键（citekey）显示格式化后的参考文献。
 
 ## 增强功能
 
-相比原版插件，**Bib Shower** 增加了以下功能和改进：
+相比原版插件，**Bib Manager** 增加了以下功能和改进：
 
 1.  **智能输入增强**：
     *   支持使用中文括号 `【@` 触发引用提示，并在选择后自动转换为标准的英文格式 `[@citekey]`。
@@ -36,10 +36,10 @@
 
 ### 使用说明
 
-1.  在 Obsidian 设置中启用 **Bib Shower** 插件。
+1.  在 Obsidian 设置中启用 **Bib Manager** 插件。
 2.  在插件设置中配置参考文献文件（.bib, .json, .yaml）的路径。
 3.  （可选）配置 CSL 样式文件路径或 URL。
-4.  通过命令面板运行 `Bib Shower: Show reference list` 来打开侧边栏的参考文献面板。
+4.  通过命令面板运行 `Bib Manager: Show reference list` 来打开侧边栏的参考文献面板。
 
 ## 致谢
 

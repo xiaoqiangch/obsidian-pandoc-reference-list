@@ -1,10 +1,10 @@
 {
-	"id": "bib-shower-obsidian",
-	"name": "Bib Shower",
+	"id": "bib-manager-obsidian",
+	"name": "Bib Manager",
 	"version": "2.0.25",
 	"minAppVersion": "0.15.0",
 	"description": "Displays a formatted reference in the sidebar for each pandoc citekey present in the current document. Enhanced version of Pandoc Reference List.",
-	"author": "mgmeyers & Roo",
+	"author": "CHEN XIAOQIANG",
 	"authorUrl": "https://github.com/mgmeyers/obsidian-pandoc-reference-list",
 	"isDesktopOnly": true
 }
