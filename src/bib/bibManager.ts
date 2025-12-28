@@ -1375,4 +1375,56 @@ export class BibManager {
       throw new Error('Could not find entry block in bib file.');
     }
   }
+
+  async getAllEntriesForIntegration() {
+    await this.initPromise.promise;
+    const entries = Array.from(this.bibCache.values());
+    
+    // Pre-fetch Zotero links if needed
+    if (this.plugin.settings.pullFromZotero) {
+      await this.getZLinksForKeys(new Set(entries.map(e => e.id)));
+    }
+
+    return entries.map(e => {
+      const zAttachmentLinks = this.zCitekeyToAttachmentLinks.get(e.id) || [];
+      const localAttachmentLinks = this.parseBibFileField(e.file);
+      const allAttachmentLinks = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
+      const pdfLink = allAttachmentLinks.find(link => link.toLowerCase().endsWith('.pdf'));
+
+      return {
+        id: e.id,
+        title: e.title,
+        authors: e.author?.map(a => `${a.given} ${a.family}`).join(', ') || '',
+        year: e.year || '',
+        citeKey: e.id,
+        hasPdf: !!pdfLink
+      };
+    });
+  }
+
+  async getPdfDataForIntegration(entryId: string) {
+    await this.initPromise.promise;
+    const entry = this.bibCache.get(entryId);
+    if (!entry) return null;
+
+    // Ensure links are loaded
+    if (this.plugin.settings.pullFromZotero && !this.zCitekeyToAttachmentLinks.has(entryId)) {
+      await this.getZLinksForKeys(new Set([entryId]));
+    }
+
+    const zAttachmentLinks = this.zCitekeyToAttachmentLinks.get(entryId) || [];
+    const localAttachmentLinks = this.parseBibFileField(entry.file);
+    const allAttachmentLinks = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
+    const pdfPath = allAttachmentLinks.find(link => link.toLowerCase().endsWith('.pdf'));
+
+    if (pdfPath && fs.existsSync(pdfPath)) {
+      const data = fs.readFileSync(pdfPath);
+      const base64 = data.toString('base64');
+      return {
+        name: path.basename(pdfPath),
+        data: `data:application/pdf;base64,${base64}`
+      };
+    }
+    return null;
+  }
 }

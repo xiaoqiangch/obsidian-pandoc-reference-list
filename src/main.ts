@@ -249,6 +249,40 @@ export default class ReferenceList extends Plugin {
 
     // Hot Reload logic
     this.initHotReload();
+
+    // Cross-plugin communication integration
+    this.registerDomEvent(window, 'message', async (event: MessageEvent) => {
+      const { type, entryId } = event.data;
+
+      if (type === 'BIB_MANAGER_ENTRIES_REQUEST') {
+        debugLog('Main', 'Received BIB_MANAGER_ENTRIES_REQUEST');
+        const entries = await this.bibManager.getAllEntriesForIntegration();
+        (event.source as WindowProxy)?.postMessage(
+          {
+            type: 'BIB_MANAGER_ENTRIES_RESPONSE',
+            entries,
+          },
+          { targetOrigin: event.origin }
+        );
+      }
+
+      if (type === 'BIB_MANAGER_FILE_REQUEST' && entryId) {
+        debugLog('Main', 'Received BIB_MANAGER_FILE_REQUEST', entryId);
+        const fileData = await this.bibManager.getPdfDataForIntegration(entryId);
+        if (fileData) {
+          (event.source as WindowProxy)?.postMessage(
+            {
+              type: 'BIB_MANAGER_FILE_RESPONSE',
+              entryId,
+              name: fileData.name,
+              mimeType: 'application/pdf',
+              data: fileData.data,
+            },
+            { targetOrigin: event.origin }
+          );
+        }
+      }
+    });
   }
 
   initHotReload() {
