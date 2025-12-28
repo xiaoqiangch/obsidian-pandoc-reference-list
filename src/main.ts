@@ -257,12 +257,12 @@ export default class ReferenceList extends Plugin {
       if (type === 'BIB_MANAGER_ENTRIES_REQUEST') {
         debugLog('Main', 'Received BIB_MANAGER_ENTRIES_REQUEST');
         const entries = await this.bibManager.getAllEntriesForIntegration();
-        (event.source as WindowProxy)?.postMessage(
+        event.source?.postMessage(
           {
             type: 'BIB_MANAGER_ENTRIES_RESPONSE',
             entries,
           },
-          { targetOrigin: event.origin }
+          { targetOrigin: '*' }
         );
       }
 
@@ -270,7 +270,7 @@ export default class ReferenceList extends Plugin {
         debugLog('Main', 'Received BIB_MANAGER_FILE_REQUEST', entryId);
         const fileData = await this.bibManager.getPdfDataForIntegration(entryId);
         if (fileData) {
-          (event.source as WindowProxy)?.postMessage(
+          event.source?.postMessage(
             {
               type: 'BIB_MANAGER_FILE_RESPONSE',
               entryId,
@@ -278,7 +278,7 @@ export default class ReferenceList extends Plugin {
               mimeType: 'application/pdf',
               data: fileData.data,
             },
-            { targetOrigin: event.origin }
+            { targetOrigin: '*' }
           );
         }
       }

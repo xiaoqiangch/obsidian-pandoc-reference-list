@@ -128,22 +128,22 @@ this.registerDomEvent(window, 'message', async (event: MessageEvent) => {
 
   if (type === 'BIB_MANAGER_ENTRIES_REQUEST') {
     const entries = await this.bibManager.getAllEntriesForIntegration();
-    (event.source as WindowProxy)?.postMessage({
+    event.source?.postMessage({
       type: 'BIB_MANAGER_ENTRIES_RESPONSE',
       entries,
-    }, { targetOrigin: event.origin });
+    }, { targetOrigin: '*' });
   }
 
   if (type === 'BIB_MANAGER_FILE_REQUEST' && entryId) {
     const fileData = await this.bibManager.getPdfDataForIntegration(entryId);
     if (fileData) {
-      (event.source as WindowProxy)?.postMessage({
+      event.source?.postMessage({
         type: 'BIB_MANAGER_FILE_RESPONSE',
         entryId,
         name: fileData.name,
         mimeType: 'application/pdf',
         data: fileData.data,
-      }, { targetOrigin: event.origin });
+      }, { targetOrigin: '*' });
     }
   }
 });
