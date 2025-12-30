@@ -75,10 +75,12 @@ echo -e "${GREEN}✓ 编译成功，已生成 main.js${NC}"
 # 4. 安装到目标目录
 echo -e "\n${YELLOW}步骤 3: 安装到 Obsidian 仓库...${NC}"
 
-# 目标目录
-TARGET="../testBrain/.obsidian/plugins/bib-manager-obsidian"
+# 目标仓库路径，默认为 ../testBrain
+VAULT_PATH=${1:-"../testBrain"}
+TARGET="$VAULT_PATH/.obsidian/plugins/bib-manager-obsidian"
 
-echo "目标目录: $TARGET"
+echo "目标仓库: $VAULT_PATH"
+echo "安装目录: $TARGET"
 
 # 创建目录
 mkdir -p "$TARGET"
@@ -100,7 +102,7 @@ echo -e "\n${GREEN}======================================${NC}"
 echo -e "${GREEN}安装完成!${NC}"
 echo -e "插件位置: ${BLUE}$TARGET${NC}"
 echo -e "\n${YELLOW}后续操作:${NC}"
-echo -e "1. 打开 Obsidian 仓库 '${BLUE}../testBrain${NC}'"
+echo -e "1. 打开 Obsidian 仓库 '${BLUE}$VAULT_PATH${NC}'"
 echo -e "2. 设置 → 社区插件 → 启用 '${BLUE}Bib Manager${NC}'"
 echo -e "3. 如果插件已启用，请在插件列表中点击刷新或重启 Obsidian"
 echo -e "${GREEN}======================================${NC}"
