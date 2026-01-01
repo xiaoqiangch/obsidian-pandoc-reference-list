@@ -1389,7 +1389,7 @@ export class BibManager {
       const zAttachmentLinks = this.zCitekeyToAttachmentLinks.get(e.id) || [];
       const localAttachmentLinks = this.parseBibFileField(e.file);
       const allAttachmentLinks = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
-      const pdfLink = allAttachmentLinks.find(link => link.toLowerCase().endsWith('.pdf'));
+      const pdfLink = allAttachmentLinks.find(link => link.toLowerCase().endsWith('.pdf') && fs.existsSync(link));
 
       return {
         id: e.id,
