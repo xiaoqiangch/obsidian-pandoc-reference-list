@@ -503,17 +503,22 @@ export default class ReferenceList extends Plugin {
     }
 
     if (view && view.mode === 'all') {
-      view.setViewContent(null);
+      if (typeof view.setViewContent === 'function') {
+        view.setViewContent(null);
+      }
       return;
     }
 
     if (!settings.pathToBibliography && !settings.pullFromZotero) {
       debugLog('Main', 'no bibliography configured');
-      return view?.setMessage(
-        t(
-          'Please provide the path to your pandoc compatible bibliography file in the Bib Manager plugin settings.'
-        )
-      );
+      if (view && typeof view.setMessage === 'function') {
+        view.setMessage(
+          t(
+            'Please provide the path to your pandoc compatible bibliography file in the Bib Manager plugin settings.'
+          )
+        );
+      }
+      return;
     }
 
     if (file) {
@@ -526,10 +531,14 @@ export default class ReferenceList extends Plugin {
         this.bibManager.fileCache.get(file)?.keys.size
       ) {
         debugLog('Main', 'cannot connect to Zotero');
-        view?.setMessage(t('Cannot connect to Zotero'));
+        if (view && typeof view.setMessage === 'function') {
+          view.setMessage(t('Cannot connect to Zotero'));
+        }
       } else {
         debugLog('Main', 'setting view content');
-        view?.setViewContent(bib);
+        if (view && typeof view.setViewContent === 'function') {
+          view.setViewContent(bib);
+        }
       }
     } else {
       debugLog('Main', 'no activeView or lastActiveFile found');
