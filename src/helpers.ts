@@ -81,6 +81,9 @@ export function debugLog(module: string, message: string, data?: any) {
   } else {
     console.log(logMessage);
   }
+  // Also log to a global array for easier inspection if needed
+  if (!(window as any).BIB_DEBUG_LOGS) (window as any).BIB_DEBUG_LOGS = [];
+  (window as any).BIB_DEBUG_LOGS.push({ timestamp, module, message, data });
 }
 
 export function showDetailedTooltip(entry: PartialCSLEntry, el: HTMLElement) {

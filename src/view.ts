@@ -52,7 +52,7 @@ export class ReferenceListView extends ItemView {
     
     if (this.mode === 'current') {
       if (bib) {
-        debugLog('View', 'appending bib to container');
+        debugLog('View', 'appending bib to container', { bibHtml: bib.outerHTML.substring(0, 100) });
         container.append(bib);
       } else {
         debugLog('View', 'no bib, showing empty message');

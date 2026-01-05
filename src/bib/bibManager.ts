@@ -761,6 +761,12 @@ export class BibManager {
       cachedDoc?.source && areSettingsEqual
         ? cachedDoc.source
         : await this.loadScopedEngine(settings);
+    
+    debugLog('BibManager', 'source engine loaded', { 
+      hasEngine: !!source?.engine, 
+      bibCacheSize: source?.bibCache?.size,
+      areSettingsEqual 
+    });
 
     if (settings?.bibliography) {
       const bibPaths = Array.isArray(settings.bibliography)
@@ -835,28 +841,39 @@ export class BibManager {
         return resolved;
       })
     );
+    debugLog('BibManager', 'filtered citations', { 
+      processedCount: processed.length, 
+      filteredCount: filtered.length,
+      resolvedKeysCount: resolvedKeys.size,
+      unresolvedKeysCount: unresolvedKeys.size
+    });
 
     // Do we need this?
     // source.engine.updateItems(Array.from(resolvedKeys));
 
     const citations = cite(source.engine, filtered);
+    debugLog('BibManager', 'cite finished', { citationsCount: citations.length });
 
     if (
       cachedDoc &&
       equal(cachedDoc.citations, citations) &&
       areSettingsEqual
     ) {
+      debugLog('BibManager', 'returning cached bib', { hasBib: !!cachedDoc.bib });
       return cachedDoc.bib;
     }
 
     const bib = source.engine.makeBibliography();
+    debugLog('BibManager', 'makeBibliography finished', { hasBib: !!bib, bibLength: bib?.length });
 
     if (!bib?.length) {
+      debugLog('BibManager', 'makeBibliography returned empty/null');
       return setNull();
     }
 
     const metadata = bib[0];
     const entries = bib[1];
+    debugLog('BibManager', 'bib details', { metadata, entriesCount: entries.length });
     const htmlStr = [metadata.bibstart];
 
     metadata.entry_ids?.forEach((e: string, i: number) => {
@@ -877,6 +894,7 @@ export class BibManager {
         await this.getZLinksForKeys(resolvedKeys);
       }
       parsed = this.prepBibHTML(parsed, file, false, source.bibCache);
+      debugLog('BibManager', 'prepBibHTML finished', { hasParsed: !!parsed });
     }
 
     const result: FileCache = {
