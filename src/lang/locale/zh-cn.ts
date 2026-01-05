@@ -128,4 +128,5 @@ export default {
   'Copy Bookmarklet': '复制书签脚本',
   'Bookmarklet copied to clipboard!': '书签脚本已复制到剪贴板！',
   'Show recently added': '显示最近添加',
+  'Refreshing bibliography...': '正在刷新文献库...',
 };

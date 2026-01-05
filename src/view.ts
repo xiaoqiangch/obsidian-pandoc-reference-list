@@ -133,6 +133,23 @@ export class ReferenceListView extends ItemView {
       });
     });
 
+    // Refresh Button
+    actionsContainer.createDiv({
+      cls: 'clickable-icon',
+      attr: { 'aria-label': t('Refresh bibliography') }
+    }, (btn) => {
+      setIcon(btn, 'refresh-cw');
+      btn.onClickEvent(async () => {
+        new Notice(t('Refreshing bibliography...'));
+        await this.plugin.bibManager.reinit(true);
+        if (this.mode === 'all') {
+          this.renderAllReferences();
+        } else {
+          this.plugin.processReferences();
+        }
+      });
+    });
+
     const activeFile = this.plugin.app.workspace.getActiveFile() || this.plugin.lastActiveFile;
     const count = this.mode === 'current'
       ? (activeFile ? this.plugin.bibManager.fileCache.get(activeFile)?.keys.size || 0 : 0)

@@ -142,4 +142,5 @@ export default {
   'Copy Bookmarklet': 'Copy Bookmarklet',
   'Bookmarklet copied to clipboard!': 'Bookmarklet copied to clipboard!',
   'Show recently added': 'Show recently added',
+  'Refreshing bibliography...': 'Refreshing bibliography...',
 };
