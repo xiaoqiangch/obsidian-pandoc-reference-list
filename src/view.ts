@@ -45,26 +45,36 @@ export class ReferenceListView extends ItemView {
 
   setViewContent(bib: HTMLElement) {
     debugLog('View', 'setViewContent started', { hasBib: !!bib, mode: this.mode });
-    this.contentEl.empty();
-    this.renderHeader();
     
-    const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
+    // Use a class to handle transition
+    this.contentEl.addClass('is-switching');
     
-    if (this.mode === 'current') {
-      if (bib) {
-        debugLog('View', 'appending bib to container', { bibHtml: bib.outerHTML.substring(0, 100) });
-        container.append(bib);
+    setTimeout(() => {
+      this.contentEl.empty();
+      this.renderHeader();
+      
+      const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
+      
+      if (this.mode === 'current') {
+        if (bib) {
+          debugLog('View', 'appending bib to container', { bibHtml: bib.outerHTML.substring(0, 100) });
+          container.append(bib);
+        } else {
+          debugLog('View', 'no bib, showing empty message');
+          container.createDiv({
+            cls: 'pane-empty',
+            text: t('No citations found in the current document.'),
+          });
+        }
       } else {
-        debugLog('View', 'no bib, showing empty message');
-        container.createDiv({
-          cls: 'pane-empty',
-          text: t('No citations found in the current document.'),
-        });
+        debugLog('View', 'rendering all references list');
+        this.renderAllReferencesList(container);
       }
-    } else {
-      debugLog('View', 'rendering all references list');
-      this.renderAllReferencesList(container);
-    }
+      
+      // Trigger reflow for transition
+      this.contentEl.offsetHeight;
+      this.contentEl.removeClass('is-switching');
+    }, 50);
   }
 
   renderHeader() {
@@ -77,7 +87,7 @@ export class ReferenceListView extends ItemView {
     
     // Toggle Mode Button
     actionsContainer.createDiv({
-      cls: 'clickable-icon',
+      cls: `clickable-icon pwc-mode-toggle ${this.mode === 'all' ? 'is-active' : ''}`,
       attr: { 'aria-label': this.mode === 'current' ? t('Show All References') : t('Show Current References') }
     }, (btn) => {
       setIcon(btn, this.mode === 'current' ? 'library' : 'file-text');
