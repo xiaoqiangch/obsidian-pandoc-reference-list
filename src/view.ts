@@ -63,6 +63,9 @@ export class ReferenceListView extends ItemView {
         if (container.innerHTML !== bib.innerHTML) {
           container.empty();
           container.append(bib);
+          if (this.searchQuery) {
+            this.filterCurrentReferences();
+          }
         }
       } else {
         container.empty();
@@ -100,6 +103,13 @@ export class ReferenceListView extends ItemView {
         this.displayedCount = 50;
         this.showAddSection = false;
         this.pendingEntries = [];
+        
+        // Update button state and title immediately
+        btn.toggleClass('is-active', this.mode === 'all');
+        btn.setAttr('aria-label', this.mode === 'current' ? t('Show All References') : t('Show Current References'));
+        setIcon(btn, this.mode === 'current' ? 'library' : 'file-text');
+        titleContainer.firstChild.textContent = this.mode === 'current' ? t('Current References') : t('All References');
+
         if (this.mode === 'all') {
           this.renderAllReferences();
         } else {
@@ -176,26 +186,47 @@ export class ReferenceListView extends ItemView {
       });
     }
 
-    if (this.mode === 'all') {
-      const searchContainer = header.createDiv({ cls: 'pwc-manager-search' });
-      const searchInput = searchContainer.createEl('input', {
-        attr: { type: 'text', placeholder: t('Search references...'), value: this.searchQuery }
-      });
-      
-      if (this.searchQuery) {
-        const clearBtn = searchContainer.createDiv({ cls: 'pwc-search-clear' });
-        setIcon(clearBtn, 'x');
-        clearBtn.onClickEvent(() => {
-          this.searchQuery = '';
+    const searchContainer = header.createDiv({ cls: 'pwc-manager-search' });
+    const searchInput = searchContainer.createEl('input', {
+      attr: { type: 'text', placeholder: t('Search references...'), value: this.searchQuery }
+    });
+    
+    if (this.searchQuery) {
+      const clearBtn = searchContainer.createDiv({ cls: 'pwc-search-clear' });
+      setIcon(clearBtn, 'x');
+      clearBtn.onClickEvent(() => {
+        this.searchQuery = '';
+        if (this.mode === 'all') {
           this.debouncedRender();
-        });
-      }
-
-      searchInput.addEventListener('input', (e) => {
-        this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
-        this.debouncedRender();
+        } else {
+          this.filterCurrentReferences();
+        }
       });
     }
+
+    searchInput.addEventListener('input', (e) => {
+      this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
+      if (this.mode === 'all') {
+        this.debouncedRender();
+      } else {
+        this.filterCurrentReferences();
+      }
+    });
+  }
+
+  filterCurrentReferences() {
+    const container = this.contentEl.querySelector('.pwc-view-content') as HTMLElement;
+    if (!container) return;
+
+    const entries = container.querySelectorAll('.csl-entry-wrapper');
+    entries.forEach((entry: HTMLElement) => {
+      const text = entry.innerText.toLowerCase();
+      if (text.includes(this.searchQuery)) {
+        entry.style.display = '';
+      } else {
+        entry.style.display = 'none';
+      }
+    });
   }
 
   async processExternalText(text: string) {
