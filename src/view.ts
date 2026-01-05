@@ -44,37 +44,40 @@ export class ReferenceListView extends ItemView {
   }
 
   setViewContent(bib: HTMLElement) {
-    debugLog('View', 'setViewContent started', { hasBib: !!bib, mode: this.mode });
-    
-    // Use a class to handle transition
-    this.contentEl.addClass('is-switching');
-    
-    setTimeout(() => {
-      this.contentEl.empty();
-      this.renderHeader();
-      
-      const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
-      
-      if (this.mode === 'current') {
-        if (bib) {
-          debugLog('View', 'appending bib to container', { bibHtml: bib.outerHTML.substring(0, 100) });
+    debugLog('View', 'setViewContent started', {
+      hasBib: !!bib,
+      mode: this.mode,
+    });
+
+    if (this.mode === 'current') {
+      let container = this.contentEl.querySelector(
+        '.pwc-view-content'
+      ) as HTMLElement;
+      if (!container) {
+        this.contentEl.empty();
+        this.renderHeader();
+        container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
+      }
+
+      if (bib) {
+        if (container.innerHTML !== bib.innerHTML) {
+          container.empty();
           container.append(bib);
-        } else {
-          debugLog('View', 'no bib, showing empty message');
-          container.createDiv({
-            cls: 'pane-empty',
-            text: t('No citations found in the current document.'),
-          });
         }
       } else {
-        debugLog('View', 'rendering all references list');
-        this.renderAllReferencesList(container);
+        container.empty();
+        container.createDiv({
+          cls: 'pane-empty',
+          text: t('No citations found in the current document.'),
+        });
       }
-      
-      // Trigger reflow for transition
-      this.contentEl.offsetHeight;
-      this.contentEl.removeClass('is-switching');
-    }, 50);
+    } else {
+      // For 'all' mode, we still do a full refresh for now as it's less frequent
+      this.contentEl.empty();
+      this.renderHeader();
+      const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
+      this.renderAllReferencesList(container);
+    }
   }
 
   renderHeader() {

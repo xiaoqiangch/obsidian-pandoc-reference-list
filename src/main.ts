@@ -174,7 +174,7 @@ export default class ReferenceList extends Plugin {
               this.processReferences();
             }
           },
-          500,
+          1000,
           false
         )
       )
@@ -505,6 +505,18 @@ export default class ReferenceList extends Plugin {
       }
     }
 
+    if (view && view.mode === 'current') {
+      const currentContent = view.contentEl.querySelector('.pwc-view-content');
+      if (
+        currentContent &&
+        bib &&
+        currentContent.innerHTML === bib.innerHTML
+      ) {
+        debugLog('Main', 'Content unchanged, skipping update');
+        return;
+      }
+    }
+
     if (view && view.mode === 'all') {
       if (typeof view.setViewContent === 'function') {
         view.setViewContent(null);
@@ -553,7 +565,7 @@ export default class ReferenceList extends Plugin {
 
   processReferencesDebounced = debounce(
     this.processReferences.bind(this),
-    500,
+    1000,
     false
   );
 }
