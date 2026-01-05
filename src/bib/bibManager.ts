@@ -323,16 +323,22 @@ export class BibManager {
         const allEntries: PartialCSLEntry[] = [];
 
         for (const bibPath of bibPaths) {
-          const bib = await bibToCSL(
-            bibPath,
-            this.plugin.settings.pathToPandoc,
-            getVaultRoot,
-            this.plugin.cacheDir
-          );
+          try {
+            const bib = await bibToCSL(
+              bibPath,
+              this.plugin.settings.pathToPandoc,
+              getVaultRoot,
+              this.plugin.cacheDir
+            );
 
-          for (const entry of bib) {
-            bibCache.set(entry.id, entry);
-            allEntries.push(entry);
+            if (!bib) continue;
+
+            for (const entry of bib) {
+              bibCache.set(entry.id, entry);
+              allEntries.push(entry);
+            }
+          } catch (e) {
+            console.error(`Error loading scoped bibliography file ${bibPath}:`, e);
           }
         }
 
@@ -393,6 +399,11 @@ export class BibManager {
           getVaultRoot,
           this.plugin.cacheDir
         );
+
+        if (!bib) {
+          debugLog('BibManager', `bibToCSL returned null/undefined for ${pathToBib}`);
+          continue;
+        }
 
         console.log(`BibManager: loaded ${bib.length} entries from ${pathToBib}`);
 
