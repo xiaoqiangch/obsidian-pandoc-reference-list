@@ -240,7 +240,10 @@ export default class ReferenceList extends Plugin {
 
         const view = await this.initLeaf();
         if (view) {
-          view.processExternalText(content);
+          // Ensure the view is ready before processing
+          setTimeout(() => {
+            view.processExternalText(content);
+          }, 500);
         }
       });
     } catch (e) {

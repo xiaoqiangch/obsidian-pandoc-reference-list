@@ -197,6 +197,10 @@ export class ReferenceListView extends ItemView {
 
   async processExternalText(text: string) {
     console.log('processExternalText: started', { textLength: text.length });
+    
+    // If the text is a URL, try to fetch it or just pass it to DeepSeek
+    // The current implementation of callDeepSeek handles the text directly.
+    
     this.mode = 'all';
     this.showAddSection = true;
     this.pendingEntries = [];
@@ -212,6 +216,10 @@ export class ReferenceListView extends ItemView {
         this.renderAllReferencesList();
         return;
       }
+      
+      // If it's a URL, we might want to do something special, 
+      // but for now callDeepSeek is designed to handle text/URLs via prompt.
+      
       this.pendingEntries = await callDeepSeek(
         text,
         this.plugin.settings.deepseekApiUrl,
