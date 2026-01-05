@@ -1,0 +1,1 @@
+javascript:(function(){const t=document.title,e=window.location.href,n=window.getSelection().toString()||document.body.innerText.substring(0,2e3),o=`Title: ${t}\nURL: ${e}\n\nContent: ${n}`;window.location.href=`obsidian://bib-manager-add?content=${encodeURIComponent(o)}`})();
