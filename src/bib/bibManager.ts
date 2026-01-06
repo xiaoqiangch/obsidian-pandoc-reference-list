@@ -171,6 +171,8 @@ export class BibManager {
   styleCache: Map<string, string> = new Map();
 
   bibCache: Map<string, PartialCSLEntry> = new Map();
+  doiToKey: Map<string, string> = new Map();
+  titleToKey: Map<string, string> = new Map();
   fuse: Fuse<PartialCSLEntry>;
   engine: any;
 
@@ -207,6 +209,8 @@ export class BibManager {
     this.langCache.clear();
     this.styleCache.clear();
     this.bibCache.clear();
+    this.doiToKey.clear();
+    this.titleToKey.clear();
     this.fuse = null;
     this.engine = null;
     this.plugin = null;
@@ -233,7 +237,11 @@ export class BibManager {
 
       this.initPromise = new PromiseCapability();
       this.fileCache.clear();
-      if (shouldClear) this.bibCache.clear();
+      if (shouldClear) {
+        this.bibCache.clear();
+        this.doiToKey.clear();
+        this.titleToKey.clear();
+      }
 
       try {
         if (this.plugin.settings.pullFromZotero) {
@@ -431,6 +439,12 @@ export class BibManager {
         for (const entry of bib) {
           newCache.set(entry.id, entry);
           allBibEntries.push(entry);
+          if (entry.doi) {
+            this.doiToKey.set(entry.doi.trim().toLowerCase(), entry.id);
+          }
+          if (entry.title) {
+            this.titleToKey.set(entry.title.trim().toLowerCase(), entry.id);
+          }
         }
       } catch (e) {
         debugLog('BibManager', `Error loading bibliography file ${pathToBib}`, e);
@@ -512,8 +526,16 @@ export class BibManager {
     this.plugin.saveSettings();
 
     this.bibCache = new Map();
+    this.doiToKey.clear();
+    this.titleToKey.clear();
     for (const entry of bib) {
       this.bibCache.set(entry.id, entry);
+      if (entry.doi) {
+        this.doiToKey.set(entry.doi.trim().toLowerCase(), entry.id);
+      }
+      if (entry.title) {
+        this.titleToKey.set(entry.title.trim().toLowerCase(), entry.id);
+      }
     }
 
     this.setFuse(bib);
@@ -579,6 +601,12 @@ export class BibManager {
         for (const [k, v] of res.modified.entries()) {
           modifiedEntries.set(k, v);
           this.bibCache.set(k, v);
+          if (v.doi) {
+            this.doiToKey.set(v.doi.trim().toLowerCase(), k);
+          }
+          if (v.title) {
+            this.titleToKey.set(v.title.trim().toLowerCase(), k);
+          }
         }
       } catch (e) {
         console.error('Error fetching bibliography from Zotero', e);

@@ -165,6 +165,11 @@ body {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.csl-entry-wrapper.is-highlighted {
+  background-color: var(--background-modifier-success-hover);
+  transition: background-color 0.5s ease-in-out;
+}
+
 .pwc-entry-btns {
   display: inline-flex !important;
   flex-direction: row !important;

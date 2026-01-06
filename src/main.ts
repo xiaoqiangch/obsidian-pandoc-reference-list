@@ -42,6 +42,8 @@ export default class ReferenceList extends Plugin {
   bibManager: BibManager;
   _initPromise: PromiseCapability<void>;
   lastActiveFile: TFile | null = null;
+  private lastMatchQuery: string = '';
+  private lastMatchResult: string | null = null;
 
   get initPromise() {
     if (!this._initPromise) {
@@ -246,9 +248,26 @@ export default class ReferenceList extends Plugin {
           }, 500);
         }
       });
+
+      this.registerObsidianProtocolHandler('bib-manager', (params) => {
+        debugLog('Main', 'Protocol handler bib-manager called', params);
+        if (params.action === 'focus' && (params.citekey || params.title)) {
+          this.focusEntry(params.citekey, params.title);
+        }
+      });
     } catch (e) {
       console.warn('ReferenceList: Protocol handler already registered');
     }
+
+    this.registerEvent(
+      this.app.workspace.on(
+        'bib-manager:focus-entry',
+        (data: { citekey: string; title?: string }) => {
+          debugLog('Main', 'Event bib-manager:focus-entry received', data);
+          this.focusEntry(data.citekey, data.title);
+        }
+      )
+    );
 
     // Hot Reload logic
     this.initHotReload();
@@ -568,4 +587,86 @@ export default class ReferenceList extends Plugin {
     1000,
     false
   );
+
+  /**
+   * Checks if an entry exists in the library by title or DOI.
+   * @param title The title of the literature
+   * @param doi Optional DOI
+   */
+  public isEntryExists(title: string, doi?: string): boolean {
+    return this.getMatchedKey(title, doi) !== null;
+  }
+
+  /**
+   * Gets the BibTeX key for a matched entry.
+   * @param title The title of the literature
+   * @param doi Optional DOI
+   */
+  public getMatchedKey(title: string, doi?: string): string | null {
+    const queryKey = `${title}|${doi}`;
+    if (this.lastMatchQuery === queryKey) {
+      return this.lastMatchResult;
+    }
+
+    debugLog('Main', 'getMatchedKey called', { title, doi });
+    let result: string | null = null;
+
+    // 1. Try matching by DOI if provided (O(1) via index)
+    if (doi) {
+      const cleanDoi = doi.trim().toLowerCase();
+      const key = this.bibManager.doiToKey.get(cleanDoi);
+      if (key) {
+        debugLog('Main', 'Match found by DOI index', key);
+        result = key;
+      }
+    }
+
+    // 2. Try matching by exact title (O(1) via index)
+    if (!result && title) {
+      const cleanTitle = title.trim().toLowerCase();
+      const key = this.bibManager.titleToKey.get(cleanTitle);
+      if (key) {
+        debugLog('Main', 'Match found by title index', key);
+        result = key;
+      }
+    }
+
+    this.lastMatchQuery = queryKey;
+    this.lastMatchResult = result;
+    return result;
+  }
+
+  /**
+   * Focuses and displays a specific BibTeX entry in the Bib Manager view.
+   * @param key The BibTeX citation key (e.g., "Smith2023")
+   * @param title Optional title for fallback matching
+   */
+  public async focusEntry(key: string, title?: string) {
+    debugLog('Main', 'focusEntry called', { key, title });
+    await this.activateView();
+
+    let entry = this.bibManager.bibCache.get(key);
+
+    if (!entry && title) {
+      debugLog('Main', 'Entry not found by key, trying exact title search', title);
+      const cleanTitle = title.trim().toLowerCase();
+      const matchedKey = this.bibManager.titleToKey.get(cleanTitle);
+      if (matchedKey) {
+        entry = this.bibManager.bibCache.get(matchedKey);
+        debugLog('Main', 'Entry found by exact title search', entry?.id);
+      }
+    }
+
+    if (entry) {
+      debugLog('Main', 'Revealing entry', entry.id);
+      this.view?.revealEntry(entry);
+    } else {
+      debugLog('Main', 'Entry not found', { key, title });
+      new Notice(`Entry ${key} not found in library.`);
+    }
+  }
+
+  public async activateView() {
+    await this.initLeaf();
+  }
 }

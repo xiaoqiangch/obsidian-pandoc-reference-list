@@ -699,4 +699,26 @@ export class ReferenceListView extends ItemView {
   getIcon() {
     return 'quote-glyph';
   }
+
+  public async revealEntry(entry: PartialCSLEntry) {
+    debugLog('View', 'revealEntry called', entry.id);
+    this.mode = 'all';
+    this.searchQuery = entry.id.toLowerCase();
+    this.displayedCount = 50;
+    this.showAddSection = false;
+    
+    await this.renderAllReferences();
+    
+    const container = this.contentEl.querySelector('.pwc-view-content');
+    const element = container?.querySelector(`[data-citekey="${entry.id}"]`)?.closest('.csl-entry-wrapper') as HTMLElement;
+    
+    if (element) {
+      debugLog('View', 'Element found, scrolling and highlighting');
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      element.addClass('is-highlighted');
+      setTimeout(() => element.removeClass('is-highlighted'), 3000);
+    } else {
+      debugLog('View', 'Element not found in DOM', entry.id);
+    }
+  }
 }
