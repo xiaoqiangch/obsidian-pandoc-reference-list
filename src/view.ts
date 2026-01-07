@@ -543,11 +543,22 @@ export class ReferenceListView extends ItemView {
                         paths.forEach(link => {
                             const isPDF = link.toLowerCase().endsWith('.pdf');
                             const isEPUB = link.toLowerCase().endsWith('.epub');
-                            if (isPDF || isEPUB) {
+                            const isHTML = link.toLowerCase().endsWith('.html') || link.toLowerCase().endsWith('.htm');
+                            if (isPDF || isEPUB || isHTML) {
                                 btnContainer.createDiv('clickable-icon', (div) => {
-                                    setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
+                                    let icon = 'lucide-file-text';
+                                    if (isEPUB) icon = 'lucide-book-open';
+                                    if (isHTML) icon = 'lucide-globe';
+                                    
+                                    setIcon(div, icon);
                                     div.setAttr('aria-label', t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop()));
-                                    div.onClickEvent(() => this.plugin.bibManager.openAttachment(link));
+                                    div.onClickEvent(() => {
+                                        if (isHTML) {
+                                            this.openHTMLInternal(link);
+                                        } else {
+                                            this.plugin.bibManager.openAttachment(link);
+                                        }
+                                    });
                                 });
                             }
                         });
@@ -573,6 +584,33 @@ export class ReferenceListView extends ItemView {
         console.error('Error rendering bibliography:', e);
         bibContainer.createDiv({ text: t('Error rendering bibliography.'), cls: 'pane-empty' });
     }
+  }
+
+  async openHTMLInternal(link: string) {
+    const vaultRoot = (this.plugin.app.vault.adapter as any).getBasePath ? (this.plugin.app.vault.adapter as any).getBasePath() : '';
+    let relativePath = '';
+    let isInsideVault = false;
+
+    if (vaultRoot && link.startsWith(vaultRoot)) {
+        isInsideVault = true;
+        relativePath = link.substring(vaultRoot.length).replace(/^[\\\/]/, '');
+    }
+
+    if (isInsideVault) {
+        const tfile = this.plugin.app.vault.getAbstractFileByPath(relativePath);
+        if (tfile instanceof TFile) {
+            const leaf = this.plugin.app.workspace.getRightLeaf(false);
+            await leaf.openFile(tfile);
+            this.plugin.app.workspace.revealLeaf(leaf);
+            return;
+        }
+    }
+
+    // If outside vault or not found, we can't easily use Obsidian's internal HTML viewer for arbitrary paths
+    // unless we symlink it like openExternalFileInternal in bibManager.
+    // However, the requirement says "软件内部的右侧新标签页中直接打开该 HTML 文件，确保使用内置视图进行预览".
+    // Let's use the symlink approach if it's external.
+    await this.plugin.bibManager.openAttachment(link);
   }
 
   async saveEntries(entries: PartialCSLEntry[]) {

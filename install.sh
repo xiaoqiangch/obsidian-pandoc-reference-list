@@ -75,10 +75,20 @@ echo -e "${GREEN}✓ 编译成功，已生成 main.js${NC}"
 # 4. 安装到目标目录
 echo -e "\n${YELLOW}步骤 3: 安装到 Obsidian 仓库...${NC}"
 
-# 目标仓库路径，默认为 ../testBrain
-VAULT_PATH=${1:-"../testBrain"}
+# 根据输入参数选择安装路径
+CHOICE=$1
+if [ "$CHOICE" == "1" ]; then
+    VAULT_PATH="../testBrain"
+elif [ "$CHOICE" == "2" ]; then
+    VAULT_PATH="/Users/chenxiaoqiang/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian_Brain"
+else
+    # 兼容原有的直接传路径或默认路径逻辑
+    VAULT_PATH=${1:-"../testBrain"}
+fi
+
 TARGET="$VAULT_PATH/.obsidian/plugins/bib-manager-obsidian"
 
+echo "选择模式: ${CHOICE:-默认}"
 echo "目标仓库: $VAULT_PATH"
 echo "安装目录: $TARGET"
 

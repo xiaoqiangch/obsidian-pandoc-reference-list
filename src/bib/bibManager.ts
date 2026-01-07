@@ -25,7 +25,7 @@ import {
   getCitations,
 } from '../parser/parser';
 import LRUCache from 'lru-cache';
-import { Keymap, MarkdownView, TFile, setIcon } from 'obsidian';
+import { Keymap, MarkdownView, TFile, setIcon, Notice } from 'obsidian';
 import { cite } from '../parser/citeproc';
 import { setCiteKeyCache } from '../editorExtension';
 import equal from 'fast-deep-equal';
@@ -33,6 +33,7 @@ import { t } from '../lang/helpers';
 
 const path = require('path');
 const fs = require('fs');
+import { FSWatcher } from 'fs';
 
 import crypto from 'crypto';
 
@@ -107,7 +108,7 @@ function getScopedSettings(file: TFile): ScopedSettings {
 
   // Checks whether the bibliography is a relative path and replaces the path with an absolute one
   const processPath = (bibPath: string) => {
-    if (existsSync(path.join(getVaultRoot(), path.dirname(file.path), bibPath))) {
+    if (fs.existsSync(path.join(getVaultRoot(), path.dirname(file.path), bibPath))) {
       return path.join(getVaultRoot(), path.dirname(file.path), bibPath);
     }
     return bibPath;
@@ -1135,10 +1136,17 @@ export class BibManager {
             if (fs.existsSync(link)) {
               btnContainer.createDiv('clickable-icon', (div) => {
                 const isPDF = link.toLowerCase().endsWith('.pdf');
-                setIcon(div, isPDF ? 'lucide-file-text' : 'lucide-book-open');
+                const isEPUB = link.toLowerCase().endsWith('.epub');
+                const isHTML = link.toLowerCase().endsWith('.html') || link.toLowerCase().endsWith('.htm');
+                
+                let icon = 'lucide-file-text';
+                if (isEPUB) icon = 'lucide-book-open';
+                if (isHTML) icon = 'lucide-globe';
+
+                setIcon(div, icon);
                 div.setAttr(
                   'aria-label',
-                  t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : 'EPUB'))
+                  t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : isEPUB ? 'EPUB' : 'HTML'))
                 );
                 div.onClickEvent(async () => {
                   await this.openAttachment(link);
@@ -1169,7 +1177,12 @@ export class BibManager {
       const tfile = app.vault.getAbstractFileByPath(relativePath);
       if (tfile instanceof TFile) {
         const leaf = app.workspace.getRightLeaf(false);
-        await leaf.openFile(tfile);
+        
+        if (link.toLowerCase().endsWith('.html') || link.toLowerCase().endsWith('.htm')) {
+          await leaf.openFile(tfile);
+        } else {
+          await leaf.openFile(tfile);
+        }
         
         if (link.toLowerCase().endsWith('.pdf')) {
           // Attempt to enable annotation mode and show tools
@@ -1252,7 +1265,12 @@ export class BibManager {
 
     if (tfile instanceof TFile) {
       const leaf = app.workspace.getRightLeaf(false);
-      await leaf.openFile(tfile);
+      
+      if (ext.toLowerCase() === '.html' || ext.toLowerCase() === '.htm') {
+        await leaf.openFile(tfile);
+      } else {
+        await leaf.openFile(tfile);
+      }
       
       if (ext.toLowerCase() === '.pdf') {
         // Attempt to enable annotation mode and show tools
@@ -1314,7 +1332,7 @@ export class BibManager {
     }
     return paths.filter((p) => {
       const ext = p.toLowerCase();
-      return ext.endsWith('.pdf') || ext.endsWith('.epub');
+      return ext.endsWith('.pdf') || ext.endsWith('.epub') || ext.endsWith('.html') || ext.endsWith('.htm');
     });
   }
 
