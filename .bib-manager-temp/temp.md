@@ -8329,3 +8329,15 @@
 @winful1988stability
 
 @li1992preferential
+
+@weil2026zhongfuyuendian
+
+@andergassen2015emergence
+
+@liang2023gaoshui
+
+@Barber2001
+
+@rabelais06Garga
+
+@schiller1999digital

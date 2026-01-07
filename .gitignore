@@ -23,3 +23,4 @@ dist
 .hotreload
 coverage
 yarn-error.log
+.bib-manager-temp/temp.md

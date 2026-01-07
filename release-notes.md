@@ -1,1 +1,2 @@
 86918b5 Fix BBT API change
+javascript:(function()%7Bvar%20title=document.title;var%20url=window.location.href;var%20selection=window.getSelection().toString()%7C%7Cdocument.body.innerText.substring(0,2000);var%20content=%22Title:%20%22+title+%22%5CnURL:%20%22+url+%22%5Cn%5CnContent:%20%22+selection;var%20obsidianUrl=%22obsidian://bib-manager-add?vault=Obsidian_Brain&content=%22+encodeURIComponent(content);window.location.href=obsidianUrl;%7D)();
