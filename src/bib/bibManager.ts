@@ -1093,6 +1093,30 @@ export class BibManager {
             });
           });
 
+          // Search on CNKI
+          btnContainer.createDiv('clickable-icon', (div) => {
+            setIcon(div, 'search');
+            div.setAttr('aria-label', t('Search on CNKI'));
+            div.onClickEvent((ev) => {
+              ev.stopPropagation();
+              const entryTitle = entry.title || entry.id;
+              const url = `https://kns.cnki.net/kns8s/defaultresult/index?crossids=YSTT4HG0%2CLSTPFY1C%2CJUP3MUPD%2CMPMFIG1A%2CWQ0UVIAA%2CBLZOG7CK%2CPWFIRAGL%2CEMRPGLPA%2CNLBO1Z6R%2CNN3FJMUV&korder=TI&kw=${encodeURIComponent(entryTitle)}`;
+              window.open(url, '_blank');
+            });
+          });
+
+          // Search on Google Scholar
+          btnContainer.createDiv('clickable-icon', (div) => {
+            setIcon(div, 'graduation-cap');
+            div.setAttr('aria-label', t('Search on Google Scholar'));
+            div.onClickEvent((ev) => {
+              ev.stopPropagation();
+              const entryTitle = entry.title || entry.id;
+              const url = `https://scholar.google.com/scholar?q=${encodeURIComponent(entryTitle)}`;
+              window.open(url, '_blank');
+            });
+          });
+
           // Get Attachment Button
           const hasAttachment = allAttachmentLinks.length > 0;
           if (!hasAttachment) {

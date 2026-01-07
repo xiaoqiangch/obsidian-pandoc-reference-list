@@ -129,4 +129,6 @@ export default {
   'Bookmarklet copied to clipboard!': '书签脚本已复制到剪贴板！',
   'Show recently added': '显示最近添加',
   'Refreshing bibliography...': '正在刷新文献库...',
+  'Search on CNKI': '在知网中搜索',
+  'Search on Google Scholar': '在谷歌学术中搜索',
 };

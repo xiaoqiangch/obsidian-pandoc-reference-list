@@ -143,4 +143,6 @@ export default {
   'Bookmarklet copied to clipboard!': 'Bookmarklet copied to clipboard!',
   'Show recently added': 'Show recently added',
   'Refreshing bibliography...': 'Refreshing bibliography...',
+  'Search on CNKI': 'Search on CNKI',
+  'Search on Google Scholar': 'Search on Google Scholar',
 };

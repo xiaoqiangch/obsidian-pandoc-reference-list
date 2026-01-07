@@ -189,6 +189,14 @@ body {
   opacity: 1;
 }
 
+.pwc-entry-btns .clickable-icon[aria-label*="CNKI"]:hover {
+    color: #248ce4;
+}
+
+.pwc-entry-btns .clickable-icon[aria-label*="Google Scholar"]:hover {
+    color: #4285f4;
+}
+
 .pwc-mode-toggle.is-active {
   color: var(--text-accent);
   background-color: var(--background-modifier-hover);
