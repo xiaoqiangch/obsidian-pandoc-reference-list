@@ -482,6 +482,7 @@ export class ReferenceListView extends ItemView {
             parsed.findAll('.csl-entry').forEach((e, i) => {
                 const id = e.dataset.citekey || metadata.entry_ids[i][0];
                 const entry = this.plugin.bibManager.bibCache.get(id);
+
                 const wrapper = createDiv({ cls: 'csl-entry-wrapper' });
                 e.parentElement.insertBefore(wrapper, e);
                 wrapper.append(e);

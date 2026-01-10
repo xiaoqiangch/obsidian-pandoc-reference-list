@@ -139,54 +139,77 @@ body {
 }
 
 .csl-entry-wrapper {
-  --icon-size: var(--icon-s);
-  --icon-stroke: var(--icon-s-stroke-width);
+  --icon-size: var(--icon-xs);
+  --icon-stroke: var(--icon-xs-stroke-width);
 
   display: block;
-  padding: 0.5em 5px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background-color: transparent;
+  transition: background-color 0.15s ease;
+  position: relative;
 }
 
 .pwc-tooltip .csl-entry-wrapper {
-  padding: 0;
+  padding: 8px;
+  border: none;
 }
 
 .csl-entry {
   font-size: var(--pwc-font-size);
+  line-height: 1.5;
   word-wrap: break-word;
-  gap: var(--size-4-2);
+  display: block; /* 自然流动 */
+  color: var(--text-normal);
 }
 
-.csl-entry:has(> div + div) {
-  display: flex;
-  align-items: baseline;
+/* Typography Hierarchy */
+.csl-entry .csl-title {
+    font-weight: inherit;
+    text-decoration: inherit;
 }
 
-.pwc-reference-list .csl-entry-wrapper:not(:last-child) {
-  border-bottom: 1px solid var(--background-modifier-border);
+.csl-entry i, 
+.csl-entry em {
+    font-style: italic;
+}
+
+.csl-entry > div, 
+.csl-entry span {
+    display: inline; /* 确保在 block 父容器中自然流动 */
+}
+
+.pwc-view-content .csl-entry-wrapper:hover {
+  background-color: var(--background-modifier-hover);
 }
 
 .csl-entry-wrapper.is-highlighted {
   background-color: var(--background-modifier-success-hover);
-  transition: background-color 0.5s ease-in-out;
+  border-left: 3px solid var(--interactive-success);
 }
 
 .pwc-entry-btns {
-  display: inline-flex !important;
+  display: inline-flex !important; /* 随文字内容流动 */
   flex-direction: row !important;
-  gap: var(--size-2-1);
-  margin-left: var(--size-4-2);
+  gap: 2px;
+  margin-left: 8px; /* 与文字保持一定间距 */
+  opacity: 0.3;
+  transition: opacity 0.2s ease;
   vertical-align: middle;
-  flex-shrink: 0;
+}
+
+.csl-entry-wrapper:hover .pwc-entry-btns {
+  opacity: 1;
 }
 
 .pwc-entry-btns .clickable-icon {
-  padding: 2px;
-  opacity: 0.8;
-  transition: opacity 0.2s;
+  padding: 3px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
 }
 
 .pwc-entry-btns .clickable-icon:hover {
-  opacity: 1;
+  background-color: var(--background-modifier-border-focus);
 }
 
 .pwc-entry-btns .clickable-icon[aria-label*="CNKI"]:hover {
