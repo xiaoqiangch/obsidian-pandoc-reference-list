@@ -50,14 +50,7 @@ export class TooltipManager {
 
         if (html) {
           if (!content) content = createFragment();
-          if (keys.length > 1) {
-            let target = html.find('.csl-right-inline');
-            if (!target) target = html.find('.csl-entry');
-            if (!target) target = html;
-            const inner = target.innerHTML;
-            const clipped = clip(inner, 100, { html: true });
-            target.innerHTML = clipped;
-          }
+          // 注意：不再裁剪内容，以保留完整的操作按钮
           content.append(html);
         }
       }
