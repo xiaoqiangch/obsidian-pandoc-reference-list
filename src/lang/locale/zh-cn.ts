@@ -131,4 +131,6 @@ export default {
   'Refreshing bibliography...': '正在刷新文献库...',
   'Search on CNKI': '在知网中搜索',
   'Search on Google Scholar': '在谷歌学术中搜索',
+  'Open in Preview (Full Screen)': '在预览中打开 (全屏/双页)',
+  'Open in Default Reader': '用系统默认阅读器打开',
 };

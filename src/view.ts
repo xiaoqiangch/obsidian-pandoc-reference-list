@@ -1,6 +1,6 @@
 import { ItemView, MarkdownView, WorkspaceLeaf, setIcon, Notice, TFile } from 'obsidian';
 
-import { copyElToClipboard, debounce, debugLog, showDetailedTooltip } from './helpers';
+import { copyElToClipboard, debounce, debugLog, showDetailedTooltip, openPdfInPreview, openEpubInDefaultReader } from './helpers';
 import { t } from './lang/helpers';
 import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
@@ -583,6 +583,26 @@ export class ReferenceListView extends ItemView {
                                         } else {
                                             this.plugin.bibManager.openAttachment(link);
                                         }
+                                    });
+                                });
+                            }
+                            if (isPDF) {
+                                btnContainer.createDiv('clickable-icon', (div) => {
+                                    setIcon(div, 'maximize');
+                                    div.setAttr('aria-label', t('Open in Preview (Full Screen)'));
+                                    div.onClickEvent(async (ev) => {
+                                        ev.stopPropagation();
+                                        await openPdfInPreview(link);
+                                    });
+                                });
+                            }
+                            if (isEPUB) {
+                                btnContainer.createDiv('clickable-icon', (div) => {
+                                    setIcon(div, 'maximize');
+                                    div.setAttr('aria-label', t('Open in Default Reader'));
+                                    div.onClickEvent(async (ev) => {
+                                        ev.stopPropagation();
+                                        await openEpubInDefaultReader(link);
                                     });
                                 });
                             }

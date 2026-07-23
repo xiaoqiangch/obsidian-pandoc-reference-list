@@ -73,6 +73,44 @@ export function debounce<T extends (...args: any[]) => any>(
   };
 }
 
+export async function openPdfInPreview(filePath: string) {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const { exec } = require('child_process');
+  
+  // AppleScript to open file in Preview, set to full screen and two pages mode
+  const script = `
+    tell application "Preview"
+      activate
+      open POSIX file "${filePath}"
+      delay 0.5
+      tell application "System Events"
+        tell process "Preview"
+          -- Two Pages mode (Cmd+3)
+          keystroke "3" using {command down}
+          delay 0.2
+          -- Full Screen (Ctrl+Cmd+F)
+          keystroke "f" using {command down, control down}
+        end tell
+      end tell
+    end tell
+  `;
+
+  exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (error: any) => {
+    if (error) {
+      console.error('Failed to open PDF in Preview with AppleScript:', error);
+      // Fallback: just open the file
+      require('electron').shell.openPath(filePath);
+    }
+  });
+}
+
+export async function openEpubInDefaultReader(filePath: string) {
+  require('electron').shell.openPath(filePath);
+}
+
 export function debugLog(module: string, message: string, data?: any) {
   const timestamp = new Date().toISOString();
   const logMessage = `[BibShower][${timestamp}][${module}] ${message}`;
