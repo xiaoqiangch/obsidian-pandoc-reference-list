@@ -428,6 +428,10 @@ export class ReferenceListView extends ItemView {
             return;
         }
 
+        if (this.plugin.settings.pullFromZotero) {
+            await this.plugin.bibManager.getZLinksForKeys(new Set(allIds));
+        }
+
         let bib;
         try {
             this.plugin.bibManager.engine.updateItems(allIds);
@@ -491,8 +495,10 @@ export class ReferenceListView extends ItemView {
                 const btnContainer = target.createSpan({ cls: 'pwc-entry-btns' });
 
                 if (entry) {
-                    const paths = this.plugin.bibManager.parseBibFileField(entry.file);
-                    
+                    const zAttachmentLinks = this.plugin.bibManager.zCitekeyToAttachmentLinks.get(id) || [];
+                    const localAttachmentLinks = this.plugin.bibManager.parseBibFileField(entry.file);
+                    const paths = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
+
                     // Copy Citekey Button
                     btnContainer.createDiv('clickable-icon', (div) => {
                         setIcon(div, 'copy');
@@ -551,9 +557,11 @@ export class ReferenceListView extends ItemView {
                         });
                     });
 
-                    // Get Attachment Button
-                    const hasAttachment = paths.length > 0;
-                    if (!hasAttachment) {
+                    // Get Attachment Button (only for entries with a local bib sourceFile,
+                    // since updateEntryFile needs to write the file field to a local bib)
+                    const existingPaths = paths.filter(p => fs.existsSync(p));
+                    const hasAttachment = existingPaths.length > 0;
+                    if (!hasAttachment && entry.sourceFile) {
                         btnContainer.createDiv('clickable-icon', (div) => {
                             setIcon(div, 'download');
                             div.setAttr('aria-label', t('Get attachment'));
@@ -564,8 +572,8 @@ export class ReferenceListView extends ItemView {
                         });
                     }
 
-                    if (paths.length > 0) {
-                        paths.forEach(link => {
+                    if (existingPaths.length > 0) {
+                        existingPaths.forEach(link => {
                             const isPDF = link.toLowerCase().endsWith('.pdf');
                             const isEPUB = link.toLowerCase().endsWith('.epub');
                             const isHTML = link.toLowerCase().endsWith('.html') || link.toLowerCase().endsWith('.htm');
