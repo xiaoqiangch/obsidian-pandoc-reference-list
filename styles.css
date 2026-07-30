@@ -251,6 +251,51 @@ body {
     color: var(--text-normal);
 }
 
+.pwc-filter-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 0 5px;
+}
+
+.pwc-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.pwc-filter-label {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.pwc-filter-select {
+    font-size: var(--font-ui-smaller);
+    padding: 2px 6px;
+    border-radius: var(--radius-s);
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-modifier-form-field);
+    color: var(--text-normal);
+    cursor: pointer;
+    max-width: 140px;
+}
+
+.pwc-filter-select:hover {
+    border-color: var(--background-modifier-border-hover);
+}
+
+.pwc-filter-select:focus {
+    border-color: var(--interactive-accent);
+    outline: none;
+}
+
+.pwc-sort-dir {
+    padding: 2px;
+}
+
 .pwc-reference-list a.footnote-ref {
   vertical-align: super;
 }

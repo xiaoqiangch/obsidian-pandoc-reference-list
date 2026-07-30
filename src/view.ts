@@ -11,6 +11,9 @@ const path = require('path');
 
 export const viewType = 'ReferenceListView';
 
+type SortField = 'year' | 'title' | 'author' | 'addDate' | 'id';
+type SortDirection = 'asc' | 'desc';
+
 export class ReferenceListView extends ItemView {
   plugin: ReferenceList;
   activeMarkdownLeaf: MarkdownView;
@@ -25,6 +28,11 @@ export class ReferenceListView extends ItemView {
   displayedCount = 50;
   allEntries: PartialCSLEntry[] = [];
   filteredEntries: PartialCSLEntry[] = [];
+
+  sortField: SortField = 'year';
+  sortDirection: SortDirection = 'desc';
+  filterType: string = '';
+  filterSource: string = '';
 
   private debouncedRender = debounce(() => {
     this.displayedCount = 50;
@@ -103,6 +111,8 @@ export class ReferenceListView extends ItemView {
         this.displayedCount = 50;
         this.showAddSection = false;
         this.pendingEntries = [];
+        this.filterType = '';
+        this.filterSource = '';
         
         // Update button state and title immediately
         btn.toggleClass('is-active', this.mode === 'all');
@@ -211,6 +221,100 @@ export class ReferenceListView extends ItemView {
       } else {
         this.filterCurrentReferences();
       }
+    });
+
+    if (this.mode === 'all') {
+      this.renderFilterSortToolbar(header);
+    }
+  }
+
+  getEntrySourceLabel(entry: PartialCSLEntry): string {
+    if (entry.sourceFile) {
+      return path.basename(entry.sourceFile);
+    }
+    if (this.plugin.settings.pullFromZotero) {
+      return 'Zotero';
+    }
+    return t('Unknown');
+  }
+
+  getUniqueTypes(): string[] {
+    const types = new Set<string>();
+    for (const entry of this.plugin.bibManager.bibCache.values()) {
+      if (entry.type) types.add(entry.type);
+    }
+    return Array.from(types).sort();
+  }
+
+  getUniqueSources(): string[] {
+    const sources = new Set<string>();
+    for (const entry of this.plugin.bibManager.bibCache.values()) {
+      sources.add(this.getEntrySourceLabel(entry));
+    }
+    return Array.from(sources).sort();
+  }
+
+  renderFilterSortToolbar(header: HTMLElement) {
+    const toolbar = header.createDiv({ cls: 'pwc-filter-toolbar' });
+
+    const sortContainer = toolbar.createDiv({ cls: 'pwc-filter-group' });
+    sortContainer.createDiv({ cls: 'pwc-filter-label', text: t('Sort') });
+
+    const sortSelect = sortContainer.createEl('select', { cls: 'pwc-filter-select' });
+    const sortOptions: { value: SortField; label: string }[] = [
+      { value: 'year', label: t('Year') },
+      { value: 'title', label: t('Title') },
+      { value: 'author', label: t('Author') },
+      { value: 'addDate', label: t('Date Added') },
+      { value: 'id', label: t('Citekey') },
+    ];
+    for (const opt of sortOptions) {
+      const el = sortSelect.createEl('option', { value: opt.value, text: opt.label });
+      if (opt.value === this.sortField) el.selected = true;
+    }
+    sortSelect.addEventListener('change', () => {
+      this.sortField = sortSelect.value as SortField;
+      this.debouncedRender();
+    });
+
+    const dirBtn = sortContainer.createDiv({ cls: 'clickable-icon pwc-sort-dir' });
+    setIcon(dirBtn, this.sortDirection === 'desc' ? 'arrow-down-narrow-wide' : 'arrow-up-narrow-wide');
+    dirBtn.setAttr('aria-label', this.sortDirection === 'desc' ? t('Descending') : t('Ascending'));
+    dirBtn.toggleClass('is-active', this.sortDirection === 'asc');
+    dirBtn.onClickEvent(() => {
+      this.sortDirection = this.sortDirection === 'desc' ? 'asc' : 'desc';
+      setIcon(dirBtn, this.sortDirection === 'desc' ? 'arrow-down-narrow-wide' : 'arrow-up-narrow-wide');
+      dirBtn.setAttr('aria-label', this.sortDirection === 'desc' ? t('Descending') : t('Ascending'));
+      dirBtn.toggleClass('is-active', this.sortDirection === 'asc');
+      this.debouncedRender();
+    });
+
+    const typeContainer = toolbar.createDiv({ cls: 'pwc-filter-group' });
+    typeContainer.createDiv({ cls: 'pwc-filter-label', text: t('Type') });
+    const typeSelect = typeContainer.createEl('select', { cls: 'pwc-filter-select' });
+    typeSelect.createEl('option', { value: '', text: t('All Types') });
+    for (const type of this.getUniqueTypes()) {
+      const el = typeSelect.createEl('option', { value: type, text: type });
+      if (type === this.filterType) el.selected = true;
+    }
+    typeSelect.addEventListener('change', () => {
+      this.filterType = typeSelect.value;
+      this.displayedCount = 50;
+      this.debouncedRender();
+    });
+
+    const sourceContainer = toolbar.createDiv({ cls: 'pwc-filter-group' });
+    sourceContainer.createDiv({ cls: 'pwc-filter-label', text: t('Source') });
+    const sourceSelect = sourceContainer.createEl('select', { cls: 'pwc-filter-select' });
+    sourceSelect.createEl('option', { value: '', text: t('All Sources') });
+    for (const source of this.getUniqueSources()) {
+      const el = sourceSelect.createEl('option', { value: source, text: source });
+      if (source === this.filterSource) el.selected = true;
+    }
+    sourceSelect.addEventListener('change', () => {
+      this.filterSource = sourceSelect.value;
+      this.displayedCount = 50;
+      this.debouncedRender();
     });
   }
 
@@ -373,29 +477,66 @@ export class ReferenceListView extends ItemView {
     
     if (this.allEntries.length === 0 || this.plugin.bibManager.bibCache.size !== this.allEntries.length) {
         this.allEntries = Array.from(this.plugin.bibManager.bibCache.values());
-        this.allEntries.sort((a, b) => {
-            const yearA = parseInt(a.year || '0') || 0;
-            const yearB = parseInt(b.year || '0') || 0;
-            return yearB - yearA;
-        });
     }
 
-    this.filteredEntries = this.searchQuery 
-        ? this.allEntries.filter(entry => 
+    this.filteredEntries = this.allEntries;
+
+    if (this.searchQuery) {
+        this.filteredEntries = this.filteredEntries.filter(entry => 
             entry.id.toLowerCase().includes(this.searchQuery) ||
             entry.title.toLowerCase().includes(this.searchQuery) ||
             (entry.author && entry.author.some(a => a.family?.toLowerCase().includes(this.searchQuery) || a.given?.toLowerCase().includes(this.searchQuery)))
-        )
-        : this.allEntries;
+        );
+    }
+
+    if (this.filterType) {
+        this.filteredEntries = this.filteredEntries.filter(entry => entry.type === this.filterType);
+    }
+
+    if (this.filterSource) {
+        this.filteredEntries = this.filteredEntries.filter(entry => this.getEntrySourceLabel(entry) === this.filterSource);
+    }
 
     if (this.isRecentOnly) {
         this.filteredEntries = this.filteredEntries.filter(entry => !!entry.addDate);
-        this.filteredEntries.sort((a, b) => {
-            const dateA = a.addDate || '';
-            const dateB = b.addDate || '';
-            return dateB.localeCompare(dateA);
-        });
     }
+
+    const sortMultiplier = this.sortDirection === 'asc' ? 1 : -1;
+    this.filteredEntries = [...this.filteredEntries].sort((a, b) => {
+        let cmp = 0;
+        switch (this.sortField) {
+            case 'year': {
+                const yearA = parseInt(a.year || '0') || 0;
+                const yearB = parseInt(b.year || '0') || 0;
+                cmp = yearA - yearB;
+                break;
+            }
+            case 'title': {
+                cmp = (a.title || '').localeCompare(b.title || '');
+                break;
+            }
+            case 'author': {
+                const authorA = a.author?.[0]?.family || a.author?.[0]?.given || '';
+                const authorB = b.author?.[0]?.family || b.author?.[0]?.given || '';
+                cmp = authorA.localeCompare(authorB);
+                break;
+            }
+            case 'addDate': {
+                cmp = (a.addDate || '').localeCompare(b.addDate || '');
+                break;
+            }
+            case 'id': {
+                cmp = a.id.localeCompare(b.id);
+                break;
+            }
+        }
+        if (cmp === 0) {
+            const yearA = parseInt(a.year || '0') || 0;
+            const yearB = parseInt(b.year || '0') || 0;
+            cmp = yearA - yearB;
+        }
+        return cmp * sortMultiplier;
+    });
 
     debugLog('View', 'renderAllReferencesList state', { 
         hasEngine: !!this.plugin.bibManager.engine, 

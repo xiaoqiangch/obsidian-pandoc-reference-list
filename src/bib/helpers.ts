@@ -9,6 +9,18 @@ import crypto from 'crypto';
 
 export const DEFAULT_ZOTERO_PORT = '23119';
 
+function formatDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+}
+
+function getFileMtime(bibPath: string): string {
+  try {
+    return formatDate(fs.statSync(bibPath).mtime);
+  } catch {
+    return '';
+  }
+}
+
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -49,6 +61,9 @@ export async function bibToCSL(
       console.log(`bibToCSL: loading from cache ${cacheFile}`);
       const data = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
       console.log(`bibToCSL: loaded ${data.length} entries from cache`);
+      for (const entry of data) {
+        entry.sourceFile = bibPath;
+      }
       return data;
     } catch (e) {
       console.warn(`bibToCSL: failed to load cache ${cacheFile}`, e);
@@ -66,6 +81,13 @@ export async function bibToCSL(
         try {
           const json = JSON.parse(data.toString());
           console.log(`bibToCSL: parsed ${json.length} entries from JSON`);
+          const fileMtime = getFileMtime(bibPath);
+          for (const entry of json) {
+            entry.sourceFile = bibPath;
+            if (!entry.addDate) {
+              entry.addDate = fileMtime;
+            }
+          }
           res(json);
         } catch (e) {
           console.error(`bibToCSL: failed to parse JSON file ${bibPath}`, e);
@@ -143,13 +165,19 @@ export async function bibToCSL(
         }
       }
 
+      const fileMtime = getFileMtime(bibPath);
+
       for (const entry of csl) {
+        entry.sourceFile = bibPath;
         if (extraMap.has(entry.id)) {
           const extra = extraMap.get(entry.id);
           entry.file = extra.file;
           entry.line = extra.line;
           entry.addDate = (extra as any).addDate;
-          entry.sourceFile = bibPath;
+        }
+        
+        if (!entry.addDate) {
+          entry.addDate = fileMtime;
         }
         
         // Map CSL fields to our PartialCSLEntry fields if they are different

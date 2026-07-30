@@ -245,10 +245,11 @@ export class BibManager {
       }
 
       try {
+        // Always load bib files first (if any are configured)
+        await this.loadGlobalBibFile();
+        // Then merge Zotero entries if enabled
         if (this.plugin.settings.pullFromZotero) {
           await this.loadGlobalZBib(false);
-        } else {
-          await this.loadGlobalBibFile();
         }
       } finally {
         this.initPromise.resolve();
@@ -526,11 +527,13 @@ export class BibManager {
 
     this.plugin.saveSettings();
 
-    this.bibCache = new Map();
-    this.doiToKey.clear();
-    this.titleToKey.clear();
+    // Merge into existing cache (bib files may already be loaded)
     for (const entry of bib) {
       this.bibCache.set(entry.id, entry);
+      if (!entry.addDate) {
+        const group = settings.zoteroGroups.find(g => g.id === entry.groupID);
+        entry.addDate = group?.lastUpdate ? new Date(group.lastUpdate).toISOString() : new Date().toISOString();
+      }
       if (entry.doi) {
         this.doiToKey.set(entry.doi.trim().toLowerCase(), entry.id);
       }
@@ -539,7 +542,7 @@ export class BibManager {
       }
     }
 
-    this.setFuse(bib);
+    this.setFuse(Array.from(this.bibCache.values()));
 
     const style =
       settings.cslStylePath ||

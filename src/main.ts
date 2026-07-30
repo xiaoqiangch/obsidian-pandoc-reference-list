@@ -77,13 +77,13 @@ export default class ReferenceList extends Plugin {
     this.initPromise.promise
       .then(() => {
         debugLog('Main', 'initPromise.then started');
-        if (this.settings.pullFromZotero) {
-          debugLog('Main', 'pulling from Zotero');
-          return this.bibManager.loadAndRefreshGlobalZBib();
-        } else {
-          debugLog('Main', 'loading global bib file');
-          return this.bibManager.loadGlobalBibFile();
-        }
+        // Always load bib files first, then optionally load Zotero
+        return this.bibManager.loadGlobalBibFile().then(() => {
+          if (this.settings.pullFromZotero) {
+            debugLog('Main', 'pulling from Zotero');
+            return this.bibManager.loadAndRefreshGlobalZBib();
+          }
+        });
       })
       .then(() => {
         debugLog('Main', 'bib files loaded successfully');
