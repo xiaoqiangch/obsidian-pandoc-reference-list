@@ -767,3 +767,47 @@ body {
     border-top: 1px dashed var(--background-modifier-border);
 }
 
+/* Conversion progress UI */
+.pwc-conversion-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-left: 4px;
+    min-width: 80px;
+}
+
+.pwc-conversion-progress-bar {
+    height: 4px;
+    background: var(--background-modifier-border);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.pwc-conversion-progress-bar-fill {
+    height: 100%;
+    background: var(--interactive-accent);
+    transition: width 0.3s ease;
+}
+
+.pwc-conversion-progress-text {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.pwc-conversion-status-completed {
+    color: var(--text-success, #4caf50);
+}
+
+.pwc-conversion-status-failed {
+    color: var(--text-error, #f44336);
+}
+
+.pwc-entry-btns .clickable-icon.pwc-convert-btn {
+    color: var(--interactive-accent);
+}
+
+.pwc-entry-btns .clickable-icon.pwc-convert-btn.is-active {
+    color: var(--text-success, #4caf50);
+}
+

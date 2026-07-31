@@ -24,3 +24,6 @@ dist
 coverage
 yarn-error.log
 .bib-manager-temp/temp.md
+
+# Playwright MCP artifacts
+.playwright-mcp/

@@ -31,6 +31,10 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   deepseekApiKey: '',
   attachmentDirectory: '',
   browserDownloadDirectory: '',
+  convertOutputPath: 'literature',
+  convertModelApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+  convertModelApiKey: '',
+  convertModelName: 'doubao-seed-2-0-lite-260428',
 };
 
 export interface ZoteroGroup {
@@ -64,6 +68,10 @@ export interface ReferenceListSettings {
   deepseekApiKey: string;
   attachmentDirectory: string;
   browserDownloadDirectory: string;
+  convertOutputPath: string;
+  convertModelApiUrl: string;
+  convertModelApiKey: string;
+  convertModelName: string;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -491,5 +499,59 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           new Notice(t('Bookmarklet copied to clipboard!'));
         });
       });
+
+    containerEl.createEl('h3', { text: t('Document Conversion Settings') });
+
+    new Setting(containerEl)
+      .setName(t('Conversion output path'))
+      .setDesc(t('Directory (relative to vault root) where converted markdown files and images will be saved.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('literature')
+          .setValue(this.plugin.settings.convertOutputPath)
+          .onChange((value) => {
+            this.plugin.settings.convertOutputPath = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Conversion model API URL'))
+      .setDesc(t('OpenAI-compatible API URL for the vision model used to convert PDF/EPUB to Markdown. Defaults to Volcengine ARK API.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('https://ark.cn-beijing.volces.com/api/v3')
+          .setValue(this.plugin.settings.convertModelApiUrl)
+          .onChange((value) => {
+            this.plugin.settings.convertModelApiUrl = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Conversion model API Key'))
+      .setDesc(t('API key for the conversion model. Leave empty to use DeepSeek API Key.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('sk-...')
+          .setValue(this.plugin.settings.convertModelApiKey)
+          .onChange((value) => {
+            this.plugin.settings.convertModelApiKey = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Conversion model name'))
+      .setDesc(t('Model name for the vision model. Defaults to doubao-seed-2-0-lite (Volcengine ARK). Supports any OpenAI-compatible vision model.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('doubao-seed-2-0-lite-260428')
+          .setValue(this.plugin.settings.convertModelName)
+          .onChange((value) => {
+            this.plugin.settings.convertModelName = value;
+            this.plugin.saveSettings();
+          })
+      );
   }
 }

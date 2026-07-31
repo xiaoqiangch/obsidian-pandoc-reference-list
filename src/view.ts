@@ -5,6 +5,7 @@ import { t } from './lang/helpers';
 import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
+import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
 
 const fs = require('fs');
 const path = require('path');
@@ -33,6 +34,8 @@ export class ReferenceListView extends ItemView {
   sortDirection: SortDirection = 'desc';
   filterType: string = '';
   filterSource: string = '';
+
+  conversionProgress: Map<string, ConvertProgress> = new Map();
 
   private debouncedRender = debounce(() => {
     this.displayedCount = 50;
@@ -698,6 +701,27 @@ export class ReferenceListView extends ItemView {
                         });
                     });
 
+                    // Open in Zotero (for Zotero entries)
+                    if (entry.groupID !== undefined) {
+                        btnContainer.createDiv('clickable-icon', (div) => {
+                            setIcon(div, 'lucide-external-link');
+                            div.setAttr('aria-label', t('Open in Zotero'));
+                            div.onClickEvent(async (ev) => {
+                                ev.stopPropagation();
+                                let link = this.plugin.bibManager.zCitekeyToLinks.get(id);
+                                if (!link) {
+                                    await this.plugin.bibManager.getZLinksForKeys(new Set([id]));
+                                    link = this.plugin.bibManager.zCitekeyToLinks.get(id);
+                                }
+                                if (link) {
+                                    window.open(link, '_blank');
+                                } else {
+                                    new Notice(t('Cannot connect to Zotero'));
+                                }
+                            });
+                        });
+                    }
+
                     // Get Attachment Button (only for entries with a local bib sourceFile,
                     // since updateEntryFile needs to write the file field to a local bib)
                     const existingPaths = paths.filter(p => fs.existsSync(p));
@@ -745,14 +769,74 @@ export class ReferenceListView extends ItemView {
                                     });
                                 });
                             }
-                            if (isEPUB) {
-                                btnContainer.createDiv('clickable-icon', (div) => {
-                                    setIcon(div, 'maximize');
-                                    div.setAttr('aria-label', t('Open in Default Reader'));
-                                    div.onClickEvent(async (ev) => {
-                                        ev.stopPropagation();
-                                        await openEpubInDefaultReader(link);
-                                    });
+                             if (isEPUB) {
+                                 btnContainer.createDiv('clickable-icon', (div) => {
+                                     setIcon(div, 'maximize');
+                                     div.setAttr('aria-label', t('Open in Default Reader'));
+                                     div.onClickEvent(async (ev) => {
+                                         ev.stopPropagation();
+                                         await openEpubInDefaultReader(link);
+                                     });
+                                 });
+                             }
+                         });
+                     }
+
+                    // Convert to MD / Open MD buttons
+                    const hasConvertableAttachment = existingPaths.some(
+                        (p: string) => p.toLowerCase().endsWith('.pdf') || p.toLowerCase().endsWith('.epub')
+                    );
+                    if (hasConvertableAttachment) {
+                        const convertablePath = existingPaths.find(
+                            (p: string) => p.toLowerCase().endsWith('.pdf') || p.toLowerCase().endsWith('.epub')
+                        )!;
+
+                        // Open MD button (only if conversion is completed or md file exists)
+                        const mdPath = getOutputMdPath(id, this.plugin.settings.convertOutputPath || 'literature');
+                        if (mdPath && fs.existsSync(mdPath)) {
+                            btnContainer.createDiv('clickable-icon', (div) => {
+                                setIcon(div, 'file-output');
+                                div.setAttr('aria-label', t('Open MD'));
+                                div.onClickEvent(async (ev) => {
+                                    ev.stopPropagation();
+                                    await this.openConvertedMd(mdPath);
+                                });
+                            });
+                        }
+
+                        // Convert to MD button
+                        const isCompleted = isConversionCompleted(id);
+                        const isInProgress = isConversionInProgress(id);
+                        const progress = this.conversionProgress.get(id);
+
+                        btnContainer.createDiv({
+                            cls: `clickable-icon pwc-convert-btn ${isCompleted ? 'is-active' : ''}`,
+                            attr: {
+                                'aria-label': isCompleted
+                                    ? t('Force re-convert')
+                                    : isInProgress
+                                    ? t('Conversion in progress')
+                                    : t('Convert to MD'),
+                            },
+                        }, (div) => {
+                            setIcon(div, isCompleted ? 'refresh-cw' : isInProgress ? 'loader' : 'file-down');
+                            div.onClickEvent(async (ev) => {
+                                ev.stopPropagation();
+                                await this.startConversion(entry, convertablePath);
+                            });
+
+                            // Show progress indicator if in progress
+                            if (progress && progress.status === 'in_progress') {
+                                const progressDiv = div.createDiv({ cls: 'pwc-conversion-progress' });
+                                const pct = progress.totalPages > 0
+                                    ? Math.round((progress.currentPage / progress.totalPages) * 100)
+                                    : 0;
+                                const progressBar = progressDiv.createDiv({ cls: 'pwc-conversion-progress-bar' });
+                                progressBar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' })
+                                    .style.width = `${pct}%`;
+                                progressDiv.createDiv({
+                                    cls: 'pwc-conversion-progress-text',
+                                    text: `${progress.currentPage}/${progress.totalPages}`,
                                 });
                             }
                         });
@@ -902,6 +986,85 @@ export class ReferenceListView extends ItemView {
     bib += `  add_date = {${timestamp}}\n`;
     bib += `}`;
     return bib;
+  }
+
+  async startConversion(entry: PartialCSLEntry, attachmentPath: string) {
+    const settings = this.plugin.settings;
+    const convertOutputPath = settings.convertOutputPath || 'literature';
+
+    const apiUrl = settings.convertModelApiUrl || 'https://ark.cn-beijing.volces.com/api/v3';
+    const apiKey = settings.convertModelApiKey || settings.deepseekApiKey;
+    const modelName = settings.convertModelName || 'doubao-seed-2-0-lite-260428';
+
+    if (!apiKey) {
+      new Notice(t('Please configure conversion model settings'));
+      return;
+    }
+
+    if (this.conversionProgress.has(entry.id) &&
+        this.conversionProgress.get(entry.id)!.status === 'in_progress') {
+      new Notice(t('Conversion in progress'));
+      return;
+    }
+
+    if (isConversionCompleted(entry.id)) {
+      forceReconvert(entry.id, convertOutputPath);
+      new Notice(t('Force re-convert started'));
+    }
+
+    const convertSettings = {
+      outputPath: convertOutputPath,
+      llm: { apiUrl, apiKey, modelName },
+    };
+
+    this.conversionProgress.set(entry.id, {
+      citekey: entry.id,
+      currentPage: 0,
+      totalPages: 0,
+      status: 'in_progress',
+      message: 'Starting...',
+    });
+
+    this.renderAllReferencesList();
+
+    try {
+      await convertToMarkdown(entry, attachmentPath, convertSettings, (progress: ConvertProgress) => {
+        this.conversionProgress.set(entry.id, progress);
+        this.renderAllReferencesList();
+      });
+
+      this.conversionProgress.delete(entry.id);
+      this.renderAllReferencesList();
+    } catch (e: any) {
+      console.error('Conversion error:', e);
+      this.conversionProgress.set(entry.id, {
+        citekey: entry.id,
+        currentPage: 0,
+        totalPages: 0,
+        status: 'failed',
+        message: e.message,
+      });
+      this.renderAllReferencesList();
+    }
+  }
+
+  async openConvertedMd(mdPath: string) {
+    const vaultRoot = (this.plugin.app.vault.adapter as any).getBasePath();
+    let relativePath = mdPath;
+    if (vaultRoot && mdPath.startsWith(vaultRoot)) {
+      relativePath = mdPath.substring(vaultRoot.length).replace(/^[\\\/]/, '');
+    }
+
+    if (relativePath !== mdPath) {
+      const tfile = this.plugin.app.vault.getAbstractFileByPath(relativePath);
+      if (tfile instanceof TFile) {
+        const leaf = this.plugin.app.workspace.getLeaf(false);
+        await leaf.openFile(tfile);
+        return;
+      }
+    }
+
+    await this.plugin.bibManager.openAttachment(mdPath);
   }
 
   setNoContentMessage() {
