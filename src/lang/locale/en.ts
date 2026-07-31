@@ -80,9 +80,8 @@ export default {
   Remove: 'Remove',
   'Open attachment': 'Open attachment',
   'Get attachment': 'Get attachment',
+  'Select attachment file': 'Select attachment file',
   'Please configure directories in settings.': 'Please configure directories in settings.',
-  'Download directory does not exist.': 'Download directory does not exist.',
-  'No PDF or EPUB files found in download directory.': 'No PDF or EPUB files found in download directory.',
   'Attachment added successfully.': 'Attachment added successfully.',
   'Failed to get attachment': 'Failed to get attachment',
   // src/tooltip.ts

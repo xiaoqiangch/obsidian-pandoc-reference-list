@@ -1124,7 +1124,7 @@ export class BibManager {
           const hasAttachment = allAttachmentLinks.length > 0;
           if (!hasAttachment) {
             btnContainer.createDiv('clickable-icon', (div) => {
-              setIcon(div, 'download');
+              setIcon(div, 'folder-open');
               div.setAttr('aria-label', t('Get attachment'));
               div.onClickEvent(async (ev) => {
                 ev.stopPropagation();

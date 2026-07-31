@@ -728,7 +728,7 @@ export class ReferenceListView extends ItemView {
                     const hasAttachment = existingPaths.length > 0;
                     if (!hasAttachment && entry.sourceFile) {
                         btnContainer.createDiv('clickable-icon', (div) => {
-                            setIcon(div, 'download');
+                            setIcon(div, 'folder-open');
                             div.setAttr('aria-label', t('Get attachment'));
                             div.onClickEvent(async (ev) => {
                                 ev.stopPropagation();
@@ -912,14 +912,9 @@ export class ReferenceListView extends ItemView {
   }
 
   async getAttachment(entry: PartialCSLEntry) {
-    const { browserDownloadDirectory, attachmentDirectory } = this.plugin.settings;
-    if (!browserDownloadDirectory || !attachmentDirectory) {
+    const { attachmentDirectory } = this.plugin.settings;
+    if (!attachmentDirectory) {
       new Notice(t('Please configure directories in settings.'));
-      return;
-    }
-
-    if (!fs.existsSync(browserDownloadDirectory)) {
-      new Notice(t('Download directory does not exist.'));
       return;
     }
 
@@ -927,33 +922,26 @@ export class ReferenceListView extends ItemView {
       fs.mkdirSync(attachmentDirectory, { recursive: true });
     }
 
+    const result = require('electron').remote.dialog.showOpenDialogSync({
+      title: t('Select attachment file'),
+      properties: ['openFile'],
+      filters: [
+        { name: 'Documents', extensions: ['pdf', 'epub'] },
+      ],
+    });
+
+    if (!result || result.length === 0) return;
+
+    const sourcePath = result[0];
+    const fileName = path.basename(sourcePath);
+    const destPath = path.join(attachmentDirectory, fileName);
+
     try {
-      const files = fs.readdirSync(browserDownloadDirectory);
-      const attachmentFiles = files
-        .filter((f: string) => f.toLowerCase().endsWith('.pdf') || f.toLowerCase().endsWith('.epub'))
-        .map((f: string) => {
-          const fullPath = path.join(browserDownloadDirectory, f);
-          return {
-            name: f,
-            path: fullPath,
-            mtime: fs.statSync(fullPath).mtimeMs
-          };
-        })
-        .sort((a: any, b: any) => b.mtime - a.mtime);
+      fs.copyFileSync(sourcePath, destPath);
 
-      if (attachmentFiles.length === 0) {
-        new Notice(t('No PDF or EPUB files found in download directory.'));
-        return;
-      }
-
-      const latestFile = attachmentFiles[0];
-      const destPath = path.join(attachmentDirectory, latestFile.name);
-
-      fs.copyFileSync(latestFile.path, destPath);
-      
       await this.plugin.bibManager.updateEntryFile(entry.id, destPath);
       new Notice(t('Attachment added successfully.'));
-      
+
       await this.plugin.bibManager.reinit(true);
       if (this.mode === 'all') {
         this.renderAllReferencesList();
