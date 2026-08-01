@@ -1356,6 +1356,21 @@ export class BibManager {
 
   parseBibFileField(fileField: string): string[] {
     if (!fileField) return [];
+
+    const validExts = ['.pdf', '.epub', '.html', '.htm'];
+    const hasValidExt = (p: string) => {
+      const ext = p.toLowerCase();
+      return validExts.some(e => ext.endsWith(e));
+    };
+
+    const cleaned = fileField.trim().replace(/^[\{\"]|[\}\"]$/g, '');
+    if (cleaned) {
+      const fullPath = path.isAbsolute(cleaned) ? cleaned : path.join(getVaultRoot(), cleaned);
+      if (hasValidExt(fullPath) && fs.existsSync(fullPath)) {
+        return [fullPath];
+      }
+    }
+
     const files = fileField.split(';');
     const paths: string[] = [];
     for (const f of files) {
@@ -1375,10 +1390,7 @@ export class BibManager {
         }
       }
     }
-    return paths.filter((p) => {
-      const ext = p.toLowerCase();
-      return ext.endsWith('.pdf') || ext.endsWith('.epub') || ext.endsWith('.html') || ext.endsWith('.htm');
-    });
+    return paths.filter((p) => hasValidExt(p));
   }
 
   dispatchResult(file: TFile, result: FileCache) {

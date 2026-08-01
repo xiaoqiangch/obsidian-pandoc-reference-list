@@ -961,6 +961,7 @@ export class ReferenceListView extends ItemView {
       new Notice(t('Attachment added successfully.'));
 
       await this.plugin.bibManager.reinit(true);
+      this.allEntries = [];
       if (this.mode === 'all') {
         this.renderAllReferencesList();
       } else {
