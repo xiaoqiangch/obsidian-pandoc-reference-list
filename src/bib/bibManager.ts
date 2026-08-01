@@ -1120,6 +1120,24 @@ export class BibManager {
             });
           });
 
+          // Open URL Button
+          if (entry.url) {
+            btnContainer.createDiv('clickable-icon', (div) => {
+              setIcon(div, 'link');
+              div.setAttr('aria-label', t('Open URL'));
+              div.onClickEvent(async (ev) => {
+                ev.stopPropagation();
+                const leaf = app.workspace.getRightLeaf(false);
+                if (leaf && typeof (leaf as any).openUrl === 'function') {
+                  await (leaf as any).openUrl(entry.url);
+                  app.workspace.revealLeaf(leaf);
+                } else {
+                  window.open(entry.url, '_blank');
+                }
+              });
+            });
+          }
+
           // Get Attachment Button
           const hasAttachment = allAttachmentLinks.length > 0;
           if (!hasAttachment) {

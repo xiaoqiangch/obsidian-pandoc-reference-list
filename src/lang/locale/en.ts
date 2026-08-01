@@ -144,6 +144,7 @@ export default {
   'Refreshing bibliography...': 'Refreshing bibliography...',
   'Search on CNKI': 'Search on CNKI',
   'Search on Google Scholar': 'Search on Google Scholar',
+  'Open URL': 'Open URL',
   'Open in Preview (Full Screen)': 'Open in Preview (Full Screen)',
   'Open in Default Reader': 'Open in Default Reader',
   'Sort': 'Sort',

@@ -537,6 +537,9 @@ export default class ReferenceList extends Plugin {
     }
 
     if (view && view.mode === 'all') {
+      if (view.showAddSection) {
+        return;
+      }
       if (typeof view.setViewContent === 'function') {
         view.setViewContent(null);
       }

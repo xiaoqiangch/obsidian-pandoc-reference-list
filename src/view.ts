@@ -701,6 +701,24 @@ export class ReferenceListView extends ItemView {
                         });
                     });
 
+                    // Open URL Button
+                    if (entry.url) {
+                        btnContainer.createDiv('clickable-icon', (div) => {
+                            setIcon(div, 'link');
+                            div.setAttr('aria-label', t('Open URL'));
+                            div.onClickEvent(async (ev) => {
+                                ev.stopPropagation();
+                                const leaf = this.plugin.app.workspace.getRightLeaf(false);
+                                if (leaf && typeof (leaf as any).openUrl === 'function') {
+                                    await (leaf as any).openUrl(entry.url);
+                                    this.plugin.app.workspace.revealLeaf(leaf);
+                                } else {
+                                    window.open(entry.url, '_blank');
+                                }
+                            });
+                        });
+                    }
+
                     // Open in Zotero (for Zotero entries)
                     if (entry.groupID !== undefined) {
                         btnContainer.createDiv('clickable-icon', (div) => {
