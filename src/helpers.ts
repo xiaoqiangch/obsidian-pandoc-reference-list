@@ -111,17 +111,22 @@ export async function openEpubInDefaultReader(filePath: string) {
   require('electron').shell.openPath(filePath);
 }
 
+const BIB_DEBUG_ENABLED = false;
+
 export function debugLog(module: string, message: string, data?: any) {
   const timestamp = new Date().toISOString();
-  const logMessage = `[BibShower][${timestamp}][${module}] ${message}`;
-  if (data) {
-    console.log(logMessage, data);
-  } else {
-    console.log(logMessage);
-  }
-  // Also log to a global array for easier inspection if needed
+  // Record to a global array for inspection if needed.
   if (!(window as any).BIB_DEBUG_LOGS) (window as any).BIB_DEBUG_LOGS = [];
   (window as any).BIB_DEBUG_LOGS.push({ timestamp, module, message, data });
+  // Only write to the console when debugging is explicitly enabled.
+  if (BIB_DEBUG_ENABLED) {
+    const logMessage = `[BibShower][${timestamp}][${module}] ${message}`;
+    if (data) {
+      console.log(logMessage, data);
+    } else {
+      console.log(logMessage);
+    }
+  }
 }
 
 export function showDetailedTooltip(entry: PartialCSLEntry, el: HTMLElement) {
