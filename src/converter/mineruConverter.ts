@@ -18,6 +18,7 @@ export interface MineruConvertSettings {
 export interface MineruConvertResult {
   mdContent: string;
   imageCount: number;
+  footnotes: string;
 }
 
 type MineruProgressFn = (current: number, total: number, message?: string) => void;
@@ -66,15 +67,17 @@ export async function convertPdfWithMineru(
 
   const extracted = extractZip(zipPath, imagesDir, imageRelativePrefix);
 
-  try {
-    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-  } catch (e) {
-    debugLog('MineruConverter', 'Failed to remove temp zip', { zipPath, error: e });
+  if (extracted.footnotes && extracted.footnotes.trim().length > 0) {
+    extracted.mdContent = extracted.mdContent.trim() + '\n\n' + extracted.footnotes + '\n';
   }
+
+  // Keep the raw MinerU result zip for inspection / debugging.
+  debugLog('MineruConverter', 'MinerU result zip preserved', { zipPath });
 
   debugLog('MineruConverter', 'MinerU conversion completed', {
     mdLength: extracted.mdContent.length,
     imageCount: extracted.imageCount,
+    footnoteLength: extracted.footnotes?.length || 0,
   });
 
   return extracted;
@@ -291,6 +294,7 @@ function extractZip(
 
   let mdContent = '';
   let imageCount = 0;
+  let contentList: any = null;
 
   for (const entry of entries) {
     const entryName = entry.entryName;
@@ -298,6 +302,21 @@ function extractZip(
 
     if (/full\.md$/i.test(entryName)) {
       mdContent = entry.getData().toString('utf-8');
+      continue;
+    }
+
+    if (/content_list(_v2)?\.json$/i.test(entryName)) {
+      try {
+        const parsed = JSON.parse(entry.getData().toString('utf-8'));
+        // Prefer the v1 content_list.json; fall back to v2 only if v1 is absent.
+        if (/content_list\.json$/i.test(entryName)) {
+          contentList = parsed;
+        } else if (!contentList) {
+          contentList = parsed;
+        }
+      } catch (e) {
+        debugLog('MineruConverter', 'Failed to parse content_list.json', { entryName, error: e });
+      }
       continue;
     }
 
@@ -310,16 +329,128 @@ function extractZip(
     }
   }
 
+  // Debug helper: dump the zip layout and detected blocks so reference-loss
+  // issues can be diagnosed from the produced images directory.
+  try {
+    const dumpLines: string[] = ['=== zip entries ==='];
+    for (const entry of entries) dumpLines.push(entry.entryName);
+    const blocks: ContentBlock[] = [];
+    collectContentBlocks(contentList, undefined, undefined, blocks);
+    const typeCount: Record<string, number> = {};
+    for (const b of blocks) typeCount[b.type] = (typeCount[b.type] || 0) + 1;
+    dumpLines.push('=== content_list block types ===');
+    dumpLines.push(JSON.stringify(typeCount));
+    dumpLines.push('=== footnote-type blocks ===');
+    for (const b of blocks) {
+      if (FOOTNOTE_TYPES.has(b.type)) {
+        dumpLines.push(`[p${b.pageIdx}][${b.type}] ${b.text.slice(0, 200)}`);
+      }
+    }
+    fs.writeFileSync(path.join(imagesDir, '_mineru_debug.txt'), dumpLines.join('\n'), 'utf-8');
+  } catch (e) {
+    debugLog('MineruConverter', 'Debug dump failed', { error: e });
+  }
+
   if (!mdContent) {
     mdContent = '';
   }
+
+  const footnotes = buildFootnotesMarkdown(mdContent, contentList);
 
   if (imageCount > 0) {
     mdContent = mdContent.replace(/\]\((?!(?:https?:)?\/\/)images?\//gi, `](${imageRelativePrefix}/`);
     mdContent = mdContent.replace(/src="images?\//gi, `src="${imageRelativePrefix}/`);
   }
 
-  return { mdContent, imageCount };
+  return { mdContent, imageCount, footnotes };
+}
+
+interface ContentBlock {
+  pageIdx: number;
+  type: string;
+  text: string;
+}
+
+const FOOTNOTE_TYPES = new Set(['page_footnote', 'footer', 'aside_text', 'ref_text']);
+
+function buildFootnotesMarkdown(mdContent: string, contentList: any): string {
+  if (!contentList) return '';
+
+  const blocks: ContentBlock[] = [];
+  collectContentBlocks(contentList, undefined, undefined, blocks);
+
+  const byPage = new Map<number, string[]>();
+  for (const block of blocks) {
+    if (!FOOTNOTE_TYPES.has(block.type)) continue;
+    const list = byPage.get(block.pageIdx) || [];
+    list.push(block.text);
+    byPage.set(block.pageIdx, list);
+  }
+
+  if (byPage.size === 0) return '';
+
+  const pageNums = [...byPage.keys()].sort((a, b) => a - b);
+  const lines: string[] = ['', '<!-- MINERU_FOOTNOTES -->', '## 页下注与注释', ''];
+  let added = 0;
+
+  for (const page of pageNums) {
+    const texts = byPage.get(page);
+    if (!texts) continue;
+    const pageText = texts.join('\n').trim();
+    if (!pageText) continue;
+    // Skip pages whose footnote text is already present in the markdown body
+    // to avoid duplication when the model already inlined the footnotes.
+    const fingerprint = pageText.slice(0, 40).replace(/\s+/g, ' ');
+    if (mdContent.includes(fingerprint)) continue;
+
+    lines.push(`### 第 ${page + 1} 页`, '');
+    for (const line of pageText.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) lines.push(`> ${trimmed}`);
+      else lines.push('>');
+    }
+    lines.push('');
+    added++;
+  }
+
+  if (added === 0) return '';
+  return lines.join('\n');
+}
+
+function collectContentBlocks(
+  value: any,
+  inheritedPage: number | undefined,
+  inheritedType: string | undefined,
+  out: ContentBlock[]
+): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectContentBlocks(item, inheritedPage, inheritedType, out);
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+
+  const pageIdx = typeof value.page_idx === 'number' ? value.page_idx : inheritedPage;
+  const ownType = typeof value.type === 'string' ? value.type : '';
+  // A generic "text" leaf inside a v2 container inherits the container type.
+  const type = ownType && ownType !== 'text' ? ownType : inheritedType || ownType;
+
+  if (typeof value.text === 'string' && value.text.trim()) {
+    out.push({ pageIdx: pageIdx ?? 0, type, text: value.text });
+  }
+  if (typeof value.content === 'string' && value.content.trim()) {
+    out.push({ pageIdx: pageIdx ?? 0, type, text: value.content });
+  }
+
+  if (value.content && typeof value.content === 'object') {
+    collectContentBlocks(value.content, pageIdx, type, out);
+  }
+
+  for (const key of Object.keys(value)) {
+    if (['type', 'text', 'page_idx', 'bbox', 'content', 'sub_type', 'image_path'].includes(key)) {
+      continue;
+    }
+    collectContentBlocks(value[key], pageIdx, type, out);
+  }
 }
 
 function sleep(ms: number): Promise<void> {

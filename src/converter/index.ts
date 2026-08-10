@@ -2,7 +2,7 @@ import { getVaultRoot, debugLog } from '../helpers';
 import { ConversionStateManager, ConversionState } from './conversionState';
 import { renderPdfPages, getPdfPageCount, RenderedPage, ExtractedImage } from './pdfRenderer';
 import { parseEpub, htmlToMarkdown } from './epubParser';
-import { convertImageToMarkdown, convertTextToMarkdown, extractReferencesToBib, LlmConvertSettings } from './llmConverter';
+import { convertImageToMarkdown, convertTextToMarkdown, extractReferencesToBib, extractAllReferencesToBib, LlmConvertSettings } from './llmConverter';
 import { convertPdfWithMineru, MineruConvertSettings } from './mineruConverter';
 import { markdownReferencesToBibtex } from './bibtexConverter';
 import { PartialCSLEntry } from '../bib/types';
@@ -405,12 +405,25 @@ async function convertEpub(
 
 async function extractAndSaveBib(mdContent: string, bibPath: string, settings: ConvertSettings) {
   try {
-    // Local deterministic conversion - always works without an LLM key
+    // Local deterministic conversion - always works without an LLM key.
     const localBib = markdownReferencesToBibtex(mdContent);
     let bibContent = localBib;
 
-    // LLM enhancement (backup engine): prefer the local result if it produced entries,
-    // otherwise fall back to the LLM when a key is configured.
+    // When an LLM key is available, prefer the LLM which can also recover
+    // footnote (页下注) citations scattered throughout the document.
+    if (settings.llm.apiKey) {
+      const llmBib = await extractAllReferencesToBib(mdContent, settings.llm);
+      if (llmBib && llmBib.trim().length > 0) {
+        const llmCount = countBibEntries(llmBib);
+        const localCount = countBibEntries(localBib);
+        debugLog('Converter', 'Bib candidates', { llmCount, localCount });
+        if (llmCount >= localCount || localCount === 0) {
+          bibContent = llmBib;
+        }
+      }
+    }
+
+    // Legacy fallback: LLM-based extraction of only the trailing references section.
     if (!bibContent.trim() && settings.llm.apiKey) {
       const llmBib = await extractReferencesToBib(mdContent, settings.llm);
       if (llmBib && llmBib.trim().length > 0) {
@@ -427,6 +440,12 @@ async function extractAndSaveBib(mdContent: string, bibPath: string, settings: C
   } catch (e: any) {
     debugLog('Converter', 'Bib extraction failed', { error: e.message });
   }
+}
+
+function countBibEntries(bibtex: string): number {
+  if (!bibtex) return 0;
+  const matches = bibtex.match(/@(\w+)\s*\{/g);
+  return matches ? matches.length : 0;
 }
 
 function replaceImagePlaceholders(

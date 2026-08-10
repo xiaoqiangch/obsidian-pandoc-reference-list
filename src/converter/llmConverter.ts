@@ -309,3 +309,170 @@ function normalizeApiUrl(url: string): string {
   }
   return normalized;
 }
+
+/**
+ * Use the LLM to extract every reference / citation from a converted document,
+ * including page-footnote citations (页下注) and the trailing bibliography.
+ * Falls back to an empty string when no API key is configured.
+ */
+export async function extractAllReferencesToBib(
+  markdownContent: string,
+  settings: LlmConvertSettings
+): Promise<string> {
+  debugLog('LlmConverter', 'extractAllReferencesToBib called', {
+    contentLength: markdownContent.length,
+  });
+
+  if (!settings.apiKey) {
+    return '';
+  }
+
+  const candidates = buildReferenceCandidate(markdownContent);
+  if (candidates.length === 0) {
+    debugLog('LlmConverter', 'No reference candidates found for LLM extraction');
+    return '';
+  }
+
+  const normalizedUrl = normalizeApiUrl(settings.apiUrl);
+  const results: string[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const chunk = candidates[i];
+    const systemPrompt = `You are a bibliography expert. Extract ALL references and literature citations from the provided document content and convert them to BibTeX format.
+
+Rules:
+1. Extract every reference, including:
+   - Citations inside page footnotes (页下注/脚注) that point to a paper, book, thesis or report.
+   - The references / bibliography / works cited section at the end of the document.
+   - Any full citation mentioned inline in the text.
+2. Skip footnote text that is only explanatory (e.g. correspondence address, funding notes, editorial remarks) and not a literature citation.
+3. Convert each reference to a proper BibTeX entry (@article, @book, @inproceedings, @incollection, @thesis, @report, etc.).
+4. Include all available fields: author, title, journal/booktitle, year, volume, number, pages, publisher, doi, url.
+5. Generate citation keys in AuthorYear format (e.g., Smith2020). Add a/b suffix when duplicates occur.
+6. Output ONLY the BibTeX entries separated by a blank line. No markdown code blocks, no explanations.
+7. If no references are found, return an empty string.`;
+
+    const body = {
+      model: settings.modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content:
+            candidates.length > 1
+              ? `This is part ${i + 1} of ${candidates.length} of the document.\n\nExtract and convert ALL references (including footnote citations) from this content to BibTeX:\n\n${chunk}`
+              : `Extract and convert ALL references (including footnote citations) from this document content to BibTeX:\n\n${chunk}`,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 8192,
+    };
+
+    try {
+      const response = await requestUrl({
+        url: `${normalizedUrl}/chat/completions`,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${settings.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      const content = response.json.choices[0].message.content;
+      const cleaned = content
+        .replace(/```(?:bibtex)?/g, '')
+        .replace(/```/g, '')
+        .trim();
+      if (cleaned.length > 0) results.push(cleaned);
+      debugLog('LlmConverter', 'extractAllReferencesToBib chunk response', {
+        part: i + 1,
+        bibLength: cleaned.length,
+      });
+    } catch (e: any) {
+      debugLog('LlmConverter', `extractAllReferencesToBib failed for part ${i + 1}`, e);
+    }
+  }
+
+  const merged = dedupeBibtex(results.join('\n\n'));
+  debugLog('LlmConverter', 'extractAllReferencesToBib merged', {
+    totalLength: merged.length,
+  });
+  return merged;
+}
+
+/**
+ * Build a list of text candidates that are most likely to contain references:
+ * the trailing bibliography plus the recovered footnote block(s). Chunks are
+ * capped so each LLM call stays within the context window.
+ */
+function buildReferenceCandidate(markdownContent: string): string[] {
+  const MAX_CHUNK = 20000;
+  const OVERLAP = 2000;
+
+  // Prefer the region starting at the references heading (if present) through
+  // the end of the document, which also contains the recovered footnotes.
+  let region = '';
+  const refsStart = extractReferencesSection(markdownContent);
+  if (refsStart) {
+    const idx = markdownContent.indexOf(refsStart);
+    if (idx >= 0) {
+      region = markdownContent.substring(idx);
+    }
+  }
+
+  if (!region || region.trim().length === 0) {
+    region = markdownContent;
+  }
+
+  // Trim leading noise: strip the title/header lines before the first reference.
+  region = region.replace(/^#.*\n+/m, '').trim();
+
+  if (region.length <= MAX_CHUNK) {
+    return region.trim() ? [region] : [];
+  }
+
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < region.length) {
+    let end = Math.min(start + MAX_CHUNK, region.length);
+    if (end < region.length) {
+      const boundary = region.lastIndexOf('\n', end);
+      if (boundary > start) end = boundary;
+    }
+    chunks.push(region.substring(start, end));
+    start = end - OVERLAP;
+  }
+  return chunks;
+}
+
+function dedupeBibtex(bibtex: string): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const entryRe = /@(\w+)\s*\{\s*([^,\s{}]+)\s*,/g;
+  let match;
+
+  while ((match = entryRe.exec(bibtex)) !== null) {
+    const key = match[2].trim();
+    if (seen.has(key)) continue;
+
+    let depth = 1;
+    let endIndex = -1;
+    for (let i = match.index + match[0].length; i < bibtex.length; i++) {
+      if (bibtex[i] === '{') depth++;
+      else if (bibtex[i] === '}') depth--;
+      if (depth === 0) {
+        endIndex = i + 1;
+        break;
+      }
+    }
+
+    const full = endIndex > 0 ? bibtex.substring(match.index, endIndex).trim() : '';
+    if (!full) continue;
+
+    seen.add(key);
+    out.push(full);
+  }
+
+  return out.join('\n\n');
+}
