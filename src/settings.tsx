@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   enableRagSearch: true,
   enableSemanticReuse: false,
   ragMaxHitsPerDoc: 3,
-  ragSnippetLength: 320,
+  ragSnippetLength: 180,
 };
 
 export interface ZoteroGroup {
@@ -670,8 +670,8 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       .setDesc('检索结果中显示的上下文片段最大字符数。')
       .addSlider((slider) =>
         slider
-          .setLimits(120, 800, 20)
-          .setValue(this.plugin.settings.ragSnippetLength || 320)
+          .setLimits(80, 600, 20)
+          .setValue(this.plugin.settings.ragSnippetLength || 180)
           .onChange((value) => {
             this.plugin.settings.ragSnippetLength = value;
             this.plugin.saveSettings();

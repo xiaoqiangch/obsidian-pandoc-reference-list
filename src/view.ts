@@ -6,7 +6,7 @@ import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
-import { buildSnippet, findLayoutHits, findLayoutBlocksByLines, readLiteratureLayout } from './rag/retrieval';
+import { buildSnippet, findLayoutHits, findLayoutBlocksByLines, readLiteratureLayout, LayoutHit } from './rag/retrieval';
 import { semanticSearch, SemanticHit } from './rag/semantic';
 
 const fs = require('fs');
@@ -16,6 +16,37 @@ export const viewType = 'ReferenceListView';
 
 type SortField = 'year' | 'title' | 'author' | 'addDate' | 'id';
 type SortDirection = 'asc' | 'desc';
+
+/** Keep only the first layout hit per page so locate buttons stay uncluttered. */
+function dedupeByPage(hits: LayoutHit[]): LayoutHit[] {
+  const seen = new Set<number>();
+  const out: LayoutHit[] = [];
+  for (const h of hits) {
+    if (seen.has(h.page)) continue;
+    seen.add(h.page);
+    out.push(h);
+  }
+  return out;
+}
+
+/** Match an entry against the query across bibliographic metadata fields. */
+function matchesMeta(entry: PartialCSLEntry, q: string): boolean {
+  if (entry.id && entry.id.toLowerCase().includes(q)) return true;
+  if (entry.title && entry.title.toLowerCase().includes(q)) return true;
+  if (entry.journal && entry.journal.toLowerCase().includes(q)) return true;
+  if (entry.booktitle && entry.booktitle.toLowerCase().includes(q)) return true;
+  if (entry.publisher && entry.publisher.toLowerCase().includes(q)) return true;
+  if (entry.keywords && entry.keywords.toLowerCase().includes(q)) return true;
+  if (entry.doi && entry.doi.toLowerCase().includes(q)) return true;
+  if (entry.url && entry.url.toLowerCase().includes(q)) return true;
+  if (entry.year && String(entry.year).toLowerCase().includes(q)) return true;
+  if (entry.type && entry.type.toLowerCase().includes(q)) return true;
+  if (entry.author && entry.author.some((a) =>
+    (a.family || '').toLowerCase().includes(q) ||
+    (a.given || '').toLowerCase().includes(q)
+  )) return true;
+  return false;
+}
 
 export class ReferenceListView extends ItemView {
   plugin: ReferenceList;
@@ -390,7 +421,7 @@ export class ReferenceListView extends ItemView {
 
     const vaultRoot = getVaultRoot();
     const outputPath = this.plugin.settings.convertOutputPath || 'literature';
-    const snippetLen = this.plugin.settings.ragSnippetLength || 320;
+    const snippetLen = this.plugin.settings.ragSnippetLength || 180;
     const maxPerDoc = this.plugin.settings.ragMaxHitsPerDoc || 3;
 
     for (const hit of relevant.slice(0, 30)) {
@@ -410,29 +441,25 @@ export class ReferenceListView extends ItemView {
       this.appendHighlighted(snipEl, snip.text, hit.terms);
 
       const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
-      const openBtn = actions.createEl('button', { cls: 'pwc-rag-btn', text: t('Open note') });
-      openBtn.addEventListener('click', () => {
+      this.addIconAction(actions, 'file-text', t('Open note'), () => {
         this.openNoteAtLine(doc.path, snip.line);
       });
 
       if (doc.literature && doc.citekey) {
         const layout = readLiteratureLayout(vaultRoot, outputPath, doc.citekey);
-        const layoutHits = findLayoutHits(layout, hit.terms, maxPerDoc);
-        if (layout && layout.length > 0 && layoutHits.length === 0) {
-          // Layout exists but no block matched; still offer page-less open.
-        }
+        const layoutHits = dedupeByPage(findLayoutHits(layout, hit.terms, maxPerDoc));
         for (const lh of layoutHits) {
-          const locBtn = actions.createEl('button', {
-            cls: 'pwc-rag-btn mod-cta',
-            text: `${t('Locate in PDF')} 第${lh.page}页`,
-          });
-          locBtn.addEventListener('click', () => {
-            this.locateLiteraturePdf(doc.citekey!, lh);
-          });
+          this.addIconAction(
+            actions,
+            'crosshair',
+            `${t('Locate in PDF')} 第${lh.page}页`,
+            () => {
+              this.locateLiteraturePdf(doc.citekey!, lh);
+            }
+          );
         }
         if (layout === null) {
-          const hint = actions.createEl('span', { cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
-          void hint;
+          actions.createSpan({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
         }
       }
     }
@@ -460,27 +487,70 @@ export class ReferenceListView extends ItemView {
       const card = group.createDiv({ cls: 'pwc-rag-card' });
       card.createEl('div', { cls: 'pwc-rag-card-path', text: hit.path });
       const snipEl = card.createDiv({ cls: 'pwc-rag-snippet' });
-      snipEl.setText(hit.content || '');
+      const raw = hit.content || '';
+      snipEl.setText(raw.length > 180 ? raw.slice(0, 180) + '…' : raw);
 
       const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
-      const openBtn = actions.createEl('button', { cls: 'pwc-rag-btn', text: t('Open note') });
-      openBtn.addEventListener('click', () => {
+      this.addIconAction(actions, 'file-text', t('Open note'), () => {
         this.openNoteAtLine(hit.path, Math.max(1, hit.startLine));
       });
 
       if (hit.citekey) {
         const layout = readLiteratureLayout(vaultRoot, outputPath, hit.citekey);
-        const layoutHits = findLayoutBlocksByLines(layout, hit.startLine, hit.endLine);
+        const layoutHits = dedupeByPage(findLayoutBlocksByLines(layout, hit.startLine, hit.endLine));
         for (const lh of layoutHits) {
-          const locBtn = actions.createEl('button', {
-            cls: 'pwc-rag-btn mod-cta',
-            text: `${t('Locate in PDF')} 第${lh.page}页`,
-          });
-          locBtn.addEventListener('click', () => {
-            this.locateLiteraturePdf(hit.citekey!, lh);
-          });
+          this.addIconAction(
+            actions,
+            'crosshair',
+            `${t('Locate in PDF')} 第${lh.page}页`,
+            () => {
+              this.locateLiteraturePdf(hit.citekey!, lh);
+            }
+          );
         }
       }
+    }
+  }
+
+  addIconAction(parent: HTMLElement, icon: string, label: string, onClick: () => void) {
+    const btn = parent.createDiv({ cls: 'clickable-icon pwc-rag-icon' }, (div) => {
+      setIcon(div, icon);
+    });
+    btn.setAttr('aria-label', label);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+    return btn;
+  }
+
+  /** Render bibliography entries (bib/Zotero metadata) matching the query. */
+  renderMetaHits(container: HTMLElement, query: string) {
+    const q = query.trim().toLowerCase();
+    if (!q) return;
+    const matches = Array.from(this.plugin.bibManager.bibCache.values()).filter((entry) =>
+      matchesMeta(entry, q)
+    );
+    if (matches.length === 0) return;
+
+    const group = container.createDiv({ cls: 'pwc-rag-group' });
+    group.createDiv({ cls: 'pwc-rag-group-title', text: t('Reference entries') });
+
+    for (const entry of matches.slice(0, 20)) {
+      const card = group.createDiv({ cls: 'pwc-rag-card' });
+      card.createEl('div', { cls: 'pwc-rag-card-title', text: entry.title || entry.id });
+      const authorStr = (entry.author || [])
+        .map((a) => [a.given, a.family].filter(Boolean).join(' '))
+        .filter(Boolean)
+        .join(', ');
+      const metaBits = [entry.id, authorStr, entry.year ? String(entry.year) : ''].filter(Boolean);
+      card.createEl('div', { cls: 'pwc-rag-card-path', text: metaBits.join(' · ') });
+
+      const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
+      this.addIconAction(actions, 'library', '定位到文献条目', () => {
+        this.searchScope = 'library';
+        this.plugin.focusEntry(entry.id);
+      });
     }
   }
 
@@ -577,6 +647,7 @@ export class ReferenceListView extends ItemView {
     listContainer.empty();
 
     if (this.searchQuery.trim() && this.searchScope === 'vault') {
+      this.renderMetaHits(listContainer, this.searchQuery);
       await this.renderRagResults(listContainer, 'vault');
       return;
     }
@@ -679,10 +750,9 @@ export class ReferenceListView extends ItemView {
     this.filteredEntries = this.allEntries;
 
     if (this.searchQuery) {
-        this.filteredEntries = this.filteredEntries.filter(entry => 
-            entry.id.toLowerCase().includes(this.searchQuery) ||
-            entry.title.toLowerCase().includes(this.searchQuery) ||
-            (entry.author && entry.author.some(a => a.family?.toLowerCase().includes(this.searchQuery) || a.given?.toLowerCase().includes(this.searchQuery)))
+        const q = this.searchQuery;
+        this.filteredEntries = this.filteredEntries.filter(entry =>
+            matchesMeta(entry, q)
         );
     }
 

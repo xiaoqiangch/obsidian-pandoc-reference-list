@@ -204,4 +204,5 @@ export default {
   'RAG index is being built...': 'RAG index is being built...',
   'RAG search is disabled': 'RAG search is disabled',
   'Reconvert to enable precise positioning': 'Reconvert to enable precise positioning',
+  'Reference entries': 'Reference entries',
 };
