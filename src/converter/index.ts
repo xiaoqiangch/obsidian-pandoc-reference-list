@@ -3,6 +3,8 @@ import { ConversionStateManager, ConversionState } from './conversionState';
 import { renderPdfPages, getPdfPageCount, RenderedPage, ExtractedImage } from './pdfRenderer';
 import { parseEpub, htmlToMarkdown } from './epubParser';
 import { convertImageToMarkdown, convertTextToMarkdown, extractReferencesToBib, LlmConvertSettings } from './llmConverter';
+import { convertPdfWithMineru, MineruConvertSettings } from './mineruConverter';
+import { markdownReferencesToBibtex } from './bibtexConverter';
 import { PartialCSLEntry } from '../bib/types';
 
 const fs = require('fs');
@@ -10,9 +12,13 @@ const path = require('path');
 
 const PAGE_MARKER_RE = /<!--\s*PAGE:(\d+)\s*-->/g;
 
+export type ConvertEngine = 'mineru' | 'llm';
+
 export interface ConvertSettings {
   outputPath: string;
+  engine?: ConvertEngine;
   llm: LlmConvertSettings;
+  mineru?: MineruConvertSettings;
 }
 
 export interface ConvertProgress {
@@ -171,6 +177,23 @@ async function convertPdf(
   onProgress: ProgressCallback | undefined,
   startPage: number
 ) {
+  const engine = settings.engine || 'mineru';
+
+  if (engine === 'mineru') {
+    await convertPdfWithMineruBranch(
+      entry,
+      pdfPath,
+      mdPath,
+      bibPath,
+      imagesDir,
+      settings,
+      state,
+      stateManager,
+      onProgress
+    );
+    return;
+  }
+
   const titleHeader = buildTitleHeader(entry);
   let mdContent = '';
 
@@ -244,6 +267,51 @@ async function convertPdf(
   mdContent = mdContent.replace(new RegExp(PAGE_MARKER_RE.source, 'g'), '').trim();
   mdContent = titleHeader + '\n\n' + mdContent;
   fs.writeFileSync(mdPath, mdContent, 'utf-8');
+
+  await extractAndSaveBib(mdContent, bibPath, settings);
+}
+
+async function convertPdfWithMineruBranch(
+  entry: PartialCSLEntry,
+  pdfPath: string,
+  mdPath: string,
+  bibPath: string,
+  imagesDir: string,
+  settings: ConvertSettings,
+  state: ConversionState,
+  stateManager: ConversionStateManager,
+  onProgress: ProgressCallback | undefined
+) {
+  const titleHeader = buildTitleHeader(entry);
+  const imageRelativePrefix = `images/${entry.id}`;
+
+  const result = await convertPdfWithMineru(
+    pdfPath,
+    imagesDir,
+    imageRelativePrefix,
+    settings.mineru || { apiToken: '' },
+    (current, total, message) => {
+      onProgress?.({
+        citekey: entry.id,
+        currentPage: current,
+        totalPages: total || state.totalPages,
+        status: 'in_progress',
+        message: message || `MinerU converting ${current}/${total}...`,
+      });
+    }
+  );
+
+  const mdContent = titleHeader + '\n\n' + result.mdContent.trim() + '\n';
+  fs.writeFileSync(mdPath, mdContent, 'utf-8');
+
+  state.convertedPages = state.totalPages;
+  stateManager.update(entry.id, { convertedPages: state.totalPages });
+
+  debugLog('Converter', 'MinerU conversion saved', {
+    citekey: entry.id,
+    mdLength: mdContent.length,
+    imageCount: result.imageCount,
+  });
 
   await extractAndSaveBib(mdContent, bibPath, settings);
 }
@@ -337,10 +405,24 @@ async function convertEpub(
 
 async function extractAndSaveBib(mdContent: string, bibPath: string, settings: ConvertSettings) {
   try {
-    const bibContent = await extractReferencesToBib(mdContent, settings.llm);
+    // Local deterministic conversion - always works without an LLM key
+    const localBib = markdownReferencesToBibtex(mdContent);
+    let bibContent = localBib;
+
+    // LLM enhancement (backup engine): prefer the local result if it produced entries,
+    // otherwise fall back to the LLM when a key is configured.
+    if (!bibContent.trim() && settings.llm.apiKey) {
+      const llmBib = await extractReferencesToBib(mdContent, settings.llm);
+      if (llmBib && llmBib.trim().length > 0) {
+        bibContent = llmBib;
+      }
+    }
+
     if (bibContent && bibContent.trim().length > 0) {
       fs.writeFileSync(bibPath, bibContent, 'utf-8');
       debugLog('Converter', 'Bib file saved', { bibPath, length: bibContent.length });
+    } else {
+      debugLog('Converter', 'No references to save to bib file', { bibPath });
     }
   } catch (e: any) {
     debugLog('Converter', 'Bib extraction failed', { error: e.message });

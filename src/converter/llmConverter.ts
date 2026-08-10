@@ -139,7 +139,7 @@ Rules:
   return content || '';
 }
 
-function extractReferencesSection(markdownContent: string): string | null {
+export function extractReferencesSection(markdownContent: string): string | null {
   const patterns = [
     /^#{1,3}\s*References?\s*$/im,
     /^#{1,3}\s*Bibliography\s*$/im,

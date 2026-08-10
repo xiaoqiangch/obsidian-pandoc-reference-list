@@ -998,12 +998,18 @@ export class ReferenceListView extends ItemView {
   async startConversion(entry: PartialCSLEntry, attachmentPath: string) {
     const settings = this.plugin.settings;
     const convertOutputPath = settings.convertOutputPath || 'literature';
+    const engine = settings.convertEngine || 'mineru';
 
     const apiUrl = settings.convertModelApiUrl || 'https://ark.cn-beijing.volces.com/api/v3';
     const apiKey = settings.convertModelApiKey || settings.deepseekApiKey;
     const modelName = settings.convertModelName || 'doubao-seed-2-0-lite-260428';
 
-    if (!apiKey) {
+    if (engine === 'mineru') {
+      if (!settings.mineruApiToken) {
+        new Notice(t('Please configure the MinerU API token in settings'));
+        return;
+      }
+    } else if (!apiKey) {
       new Notice(t('Please configure conversion model settings'));
       return;
     }
@@ -1021,7 +1027,12 @@ export class ReferenceListView extends ItemView {
 
     const convertSettings = {
       outputPath: convertOutputPath,
+      engine,
       llm: { apiUrl, apiKey, modelName },
+      mineru: {
+        apiToken: settings.mineruApiToken || '',
+        modelVersion: settings.mineruModelVersion || 'vlm',
+      },
     };
 
     this.conversionProgress.set(entry.id, {

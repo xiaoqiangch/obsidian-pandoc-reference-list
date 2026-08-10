@@ -35,6 +35,9 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   convertModelApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
   convertModelApiKey: '',
   convertModelName: 'doubao-seed-2-0-lite-260428',
+  convertEngine: 'mineru',
+  mineruApiToken: '',
+  mineruModelVersion: 'vlm',
 };
 
 export interface ZoteroGroup {
@@ -72,6 +75,9 @@ export interface ReferenceListSettings {
   convertModelApiUrl: string;
   convertModelApiKey: string;
   convertModelName: string;
+  convertEngine: 'mineru' | 'llm';
+  mineruApiToken: string;
+  mineruModelVersion: string;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -516,8 +522,48 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName(t('Conversion engine'))
+      .setDesc(t('MinerU (default) handles images, formulas, tables and references accurately. The LLM vision model is kept as a backup.'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('mineru', t('MinerU (Recommended, default)'))
+          .addOption('llm', t('LLM vision model (backup)'))
+          .setValue(this.plugin.settings.convertEngine || 'mineru')
+          .onChange((value: 'mineru' | 'llm') => {
+            this.plugin.settings.convertEngine = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('MinerU API Token'))
+      .setDesc(t('API token for MinerU PDF conversion. Create it on the API Management page at mineru.net.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('mineru_...')
+          .setValue(this.plugin.settings.mineruApiToken)
+          .onChange((value) => {
+            this.plugin.settings.mineruApiToken = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('MinerU model version'))
+      .setDesc(t('MinerU model version. Defaults to "vlm" which handles formulas, tables, OCR and code well.'))
+      .addText((text) =>
+        text
+          .setPlaceholder('vlm')
+          .setValue(this.plugin.settings.mineruModelVersion || 'vlm')
+          .onChange((value) => {
+            this.plugin.settings.mineruModelVersion = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName(t('Conversion model API URL'))
-      .setDesc(t('OpenAI-compatible API URL for the vision model used to convert PDF/EPUB to Markdown. Defaults to Volcengine ARK API.'))
+      .setDesc(t('OpenAI-compatible API URL for the LLM vision model (backup engine). Defaults to Volcengine ARK API.'))
       .addText((text) =>
         text
           .setPlaceholder('https://ark.cn-beijing.volces.com/api/v3')
@@ -530,7 +576,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t('Conversion model API Key'))
-      .setDesc(t('API key for the conversion model. Leave empty to use DeepSeek API Key.'))
+      .setDesc(t('API key for the LLM vision model (backup engine). Leave empty to use DeepSeek API Key.'))
       .addText((text) =>
         text
           .setPlaceholder('sk-...')
@@ -543,7 +589,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t('Conversion model name'))
-      .setDesc(t('Model name for the vision model. Defaults to doubao-seed-2-0-lite (Volcengine ARK). Supports any OpenAI-compatible vision model.'))
+      .setDesc(t('Model name for the LLM vision model (backup engine). Supports any OpenAI-compatible vision model.'))
       .addText((text) =>
         text
           .setPlaceholder('doubao-seed-2-0-lite-260428')
