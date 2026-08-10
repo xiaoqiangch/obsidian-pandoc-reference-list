@@ -1,11 +1,13 @@
 import { ItemView, MarkdownView, WorkspaceLeaf, setIcon, Notice, TFile } from 'obsidian';
 
-import { copyElToClipboard, debounce, debugLog, showDetailedTooltip, openPdfInPreview, openEpubInDefaultReader } from './helpers';
+import { copyElToClipboard, debounce, debugLog, showDetailedTooltip, openPdfInPreview, openEpubInDefaultReader, getVaultRoot } from './helpers';
 import { t } from './lang/helpers';
 import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
+import { buildSnippet, findLayoutHits, findLayoutBlocksByLines, readLiteratureLayout } from './rag/retrieval';
+import { semanticSearch, SemanticHit } from './rag/semantic';
 
 const fs = require('fs');
 const path = require('path');
@@ -20,6 +22,7 @@ export class ReferenceListView extends ItemView {
   activeMarkdownLeaf: MarkdownView;
   mode: 'current' | 'all' = 'current';
   searchQuery = '';
+  searchScope: 'library' | 'vault' = 'library';
   isRecentOnly = false;
   showAddSection = false;
   isProcessing = false;
@@ -200,6 +203,25 @@ export class ReferenceListView extends ItemView {
     }
 
     const searchContainer = header.createDiv({ cls: 'pwc-manager-search' });
+
+    const scopeBtn = searchContainer.createEl('button', {
+      cls: 'pwc-search-scope',
+      text: this.searchScope === 'vault' ? t('Vault') : t('Library'),
+    });
+    scopeBtn.setAttr('aria-label', t('Switch search scope'));
+    scopeBtn.addEventListener('click', () => {
+      this.searchScope = this.searchScope === 'vault' ? 'library' : 'vault';
+      scopeBtn.setText(this.searchScope === 'vault' ? t('Vault') : t('Library'));
+      this.mode = 'all';
+      this.displayedCount = 50;
+      this.showAddSection = false;
+      if (this.searchQuery) {
+        this.debouncedRender();
+      } else {
+        this.setViewContent(null);
+      }
+    });
+
     const searchInput = searchContainer.createEl('input', {
       attr: { type: 'text', placeholder: t('Search references...'), value: this.searchQuery }
     });
@@ -219,7 +241,10 @@ export class ReferenceListView extends ItemView {
 
     searchInput.addEventListener('input', (e) => {
       this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
-      if (this.mode === 'all') {
+      if (this.searchScope === 'vault') {
+        this.mode = 'all';
+        this.debouncedRender();
+      } else if (this.mode === 'all') {
         this.debouncedRender();
       } else {
         this.filterCurrentReferences();
@@ -336,6 +361,167 @@ export class ReferenceListView extends ItemView {
     });
   }
 
+  async renderRagResults(container: HTMLElement, scope: 'library' | 'vault') {
+    const query = this.searchQuery.trim();
+    if (!query) return;
+
+    if (!this.plugin.settings.enableRagSearch) {
+      container.createDiv({ cls: 'pane-empty', text: t('RAG search is disabled') });
+      return;
+    }
+
+    const rag = this.plugin.ragIndexer;
+    if (rag.index.docCount === 0) {
+      container.createDiv({ cls: 'pane-empty', text: t('RAG index is being built...') });
+      return;
+    }
+
+    const hits = rag.search(query, 60);
+    const relevant = scope === 'library' ? hits.filter((h) => h.doc.literature) : hits;
+
+    const group = container.createDiv({ cls: 'pwc-rag-group' });
+    if (scope === 'library') {
+      group.createDiv({ cls: 'pwc-rag-group-title', text: t('Full-text hits') });
+    }
+    if (relevant.length === 0) {
+      group.createDiv({ cls: 'pane-empty', text: scope === 'vault' ? t('No results found in vault.') : t('No full-text hits') });
+      return;
+    }
+
+    const vaultRoot = getVaultRoot();
+    const outputPath = this.plugin.settings.convertOutputPath || 'literature';
+    const snippetLen = this.plugin.settings.ragSnippetLength || 320;
+    const maxPerDoc = this.plugin.settings.ragMaxHitsPerDoc || 3;
+
+    for (const hit of relevant.slice(0, 30)) {
+      const doc = hit.doc;
+      let content = '';
+      try {
+        content = fs.readFileSync(path.join(vaultRoot, doc.path), 'utf-8');
+      } catch {
+        continue;
+      }
+      const snip = buildSnippet(content, hit.terms, snippetLen);
+
+      const card = group.createDiv({ cls: 'pwc-rag-card' });
+      card.createEl('div', { cls: 'pwc-rag-card-title', text: doc.title || doc.path });
+      card.createEl('div', { cls: 'pwc-rag-card-path', text: doc.path });
+      const snipEl = card.createDiv({ cls: 'pwc-rag-snippet' });
+      this.appendHighlighted(snipEl, snip.text, hit.terms);
+
+      const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
+      const openBtn = actions.createEl('button', { cls: 'pwc-rag-btn', text: t('Open note') });
+      openBtn.addEventListener('click', () => {
+        this.openNoteAtLine(doc.path, snip.line);
+      });
+
+      if (doc.literature && doc.citekey) {
+        const layout = readLiteratureLayout(vaultRoot, outputPath, doc.citekey);
+        const layoutHits = findLayoutHits(layout, hit.terms, maxPerDoc);
+        if (layout && layout.length > 0 && layoutHits.length === 0) {
+          // Layout exists but no block matched; still offer page-less open.
+        }
+        for (const lh of layoutHits) {
+          const locBtn = actions.createEl('button', {
+            cls: 'pwc-rag-btn mod-cta',
+            text: `${t('Locate in PDF')} 第${lh.page}页`,
+          });
+          locBtn.addEventListener('click', () => {
+            this.locateLiteraturePdf(doc.citekey!, lh);
+          });
+        }
+        if (layout === null) {
+          const hint = actions.createEl('span', { cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
+          void hint;
+        }
+      }
+    }
+
+    if (this.plugin.settings.enableSemanticReuse) {
+      const semanticHits = await semanticSearch(
+        this.plugin.app,
+        query,
+        scope === 'vault' ? undefined : this.plugin.settings.convertOutputPath || 'literature'
+      );
+      if (semanticHits.length > 0) {
+        this.renderSemanticResults(container, semanticHits);
+      }
+    }
+  }
+
+  renderSemanticResults(container: HTMLElement, hits: SemanticHit[]) {
+    const group = container.createDiv({ cls: 'pwc-rag-group' });
+    group.createDiv({ cls: 'pwc-rag-group-title', text: '语义命中' });
+
+    const vaultRoot = getVaultRoot();
+    const outputPath = this.plugin.settings.convertOutputPath || 'literature';
+
+    for (const hit of hits.slice(0, 20)) {
+      const card = group.createDiv({ cls: 'pwc-rag-card' });
+      card.createEl('div', { cls: 'pwc-rag-card-path', text: hit.path });
+      const snipEl = card.createDiv({ cls: 'pwc-rag-snippet' });
+      snipEl.setText(hit.content || '');
+
+      const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
+      const openBtn = actions.createEl('button', { cls: 'pwc-rag-btn', text: t('Open note') });
+      openBtn.addEventListener('click', () => {
+        this.openNoteAtLine(hit.path, Math.max(1, hit.startLine));
+      });
+
+      if (hit.citekey) {
+        const layout = readLiteratureLayout(vaultRoot, outputPath, hit.citekey);
+        const layoutHits = findLayoutBlocksByLines(layout, hit.startLine, hit.endLine);
+        for (const lh of layoutHits) {
+          const locBtn = actions.createEl('button', {
+            cls: 'pwc-rag-btn mod-cta',
+            text: `${t('Locate in PDF')} 第${lh.page}页`,
+          });
+          locBtn.addEventListener('click', () => {
+            this.locateLiteraturePdf(hit.citekey!, lh);
+          });
+        }
+      }
+    }
+  }
+
+  appendHighlighted(el: HTMLElement, text: string, terms: string[]) {
+    let safe = text.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+    const sorted = terms.slice().sort((a, b) => b.length - a.length);
+    for (const term of sorted) {
+      if (!term) continue;
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(${escaped})`, 'gi');
+      safe = safe.replace(re, '<mark>$1</mark>');
+    }
+    el.innerHTML = safe;
+  }
+
+  openNoteAtLine(relPath: string, line: number) {
+    const file = this.plugin.app.vault.getAbstractFileByPath(relPath);
+    if (!(file instanceof TFile)) {
+      new Notice(`File not found: ${relPath}`);
+      return;
+    }
+    const leaf = this.plugin.app.workspace.getLeaf(false);
+    leaf.openFile(file, { eState: { line: Math.max(0, line - 1) } }).then(() => {
+      this.plugin.app.workspace.revealLeaf(leaf);
+    });
+  }
+
+  locateLiteraturePdf(citekey: string, layoutHit: { page: number; bbox: number[] | null }) {
+    const entry = this.plugin.bibManager.bibCache.get(citekey);
+    if (!entry) return;
+    const zAttachmentLinks = this.plugin.bibManager.zCitekeyToAttachmentLinks.get(citekey) || [];
+    const localAttachmentLinks = this.plugin.bibManager.parseBibFileField(entry.file);
+    const paths = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
+    const pdf = paths.find((p) => p.toLowerCase().endsWith('.pdf') && fs.existsSync(p));
+    if (!pdf) {
+      new Notice(t('No attachment found for conversion'));
+      return;
+    }
+    this.plugin.bibManager.openPdfAtLocation(pdf, layoutHit.page, layoutHit.bbox ?? undefined);
+  }
+
   async processExternalText(text: string) {
     console.log('processExternalText: started', { textLength: text.length });
     
@@ -389,6 +575,14 @@ export class ReferenceListView extends ItemView {
       listContainer = parent.createDiv({ cls: 'pwc-manager-list' });
     }
     listContainer.empty();
+
+    if (this.searchQuery.trim() && this.searchScope === 'vault') {
+      await this.renderRagResults(listContainer, 'vault');
+      return;
+    }
+    if (this.searchQuery.trim() && this.searchScope === 'library') {
+      await this.renderRagResults(listContainer, 'library');
+    }
     
     if (this.showAddSection) {
       const addSection = listContainer.createDiv({ cls: 'pwc-add-section' });

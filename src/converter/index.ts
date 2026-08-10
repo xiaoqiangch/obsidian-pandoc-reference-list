@@ -6,6 +6,7 @@ import { convertImageToMarkdown, convertTextToMarkdown, extractReferencesToBib, 
 import { convertPdfWithMineru, MineruConvertSettings } from './mineruConverter';
 import { markdownReferencesToBibtex } from './bibtexConverter';
 import { PartialCSLEntry } from '../bib/types';
+import { writeLayoutFile } from '../rag/layout';
 
 const fs = require('fs');
 const path = require('path');
@@ -303,6 +304,12 @@ async function convertPdfWithMineruBranch(
 
   const mdContent = titleHeader + '\n\n' + result.mdContent.trim() + '\n';
   fs.writeFileSync(mdPath, mdContent, 'utf-8');
+
+  // Persist MinerU layout blocks (page + bbox + text) so the RAG index and
+  // the PDF positioning feature can locate every block precisely.
+  if (result.layout && result.layout.length > 0) {
+    writeLayoutFile(result.layout, mdContent, imagesDir);
+  }
 
   state.convertedPages = state.totalPages;
   stateManager.update(entry.id, { convertedPages: state.totalPages });

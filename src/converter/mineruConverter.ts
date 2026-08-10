@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import { debugLog } from '../helpers';
+import { RawLayoutBlock } from '../rag/layout';
 
 const fs = require('fs');
 const path = require('path');
@@ -19,6 +20,7 @@ export interface MineruConvertResult {
   mdContent: string;
   imageCount: number;
   footnotes: string;
+  layout: RawLayoutBlock[];
 }
 
 type MineruProgressFn = (current: number, total: number, message?: string) => void;
@@ -335,7 +337,7 @@ function extractZip(
     const dumpLines: string[] = ['=== zip entries ==='];
     for (const entry of entries) dumpLines.push(entry.entryName);
     const blocks: ContentBlock[] = [];
-    collectContentBlocks(contentList, undefined, undefined, blocks);
+    collectContentBlocks(contentList, undefined, undefined, undefined, blocks);
     const typeCount: Record<string, number> = {};
     for (const b of blocks) typeCount[b.type] = (typeCount[b.type] || 0) + 1;
     dumpLines.push('=== content_list block types ===');
@@ -362,13 +364,16 @@ function extractZip(
     mdContent = mdContent.replace(/src="images?\//gi, `src="${imageRelativePrefix}/`);
   }
 
-  return { mdContent, imageCount, footnotes };
+  const layout = normalizeLayout(contentList);
+
+  return { mdContent, imageCount, footnotes, layout };
 }
 
 interface ContentBlock {
   pageIdx: number;
   type: string;
   text: string;
+  bbox: number[] | null;
 }
 
 const FOOTNOTE_TYPES = new Set(['page_footnote', 'footer', 'aside_text', 'ref_text']);
@@ -377,7 +382,7 @@ function buildFootnotesMarkdown(mdContent: string, contentList: any): string {
   if (!contentList) return '';
 
   const blocks: ContentBlock[] = [];
-  collectContentBlocks(contentList, undefined, undefined, blocks);
+  collectContentBlocks(contentList, undefined, undefined, undefined, blocks);
 
   const byPage = new Map<number, string[]>();
   for (const block of blocks) {
@@ -421,10 +426,11 @@ function collectContentBlocks(
   value: any,
   inheritedPage: number | undefined,
   inheritedType: string | undefined,
+  inheritedBbox: number[] | null,
   out: ContentBlock[]
 ): void {
   if (Array.isArray(value)) {
-    for (const item of value) collectContentBlocks(item, inheritedPage, inheritedType, out);
+    for (const item of value) collectContentBlocks(item, inheritedPage, inheritedType, inheritedBbox, out);
     return;
   }
   if (value === null || typeof value !== 'object') return;
@@ -433,23 +439,76 @@ function collectContentBlocks(
   const ownType = typeof value.type === 'string' ? value.type : '';
   // A generic "text" leaf inside a v2 container inherits the container type.
   const type = ownType && ownType !== 'text' ? ownType : inheritedType || ownType;
+  const bbox = Array.isArray(value.bbox) && value.bbox.length === 4 ? value.bbox : inheritedBbox;
 
   if (typeof value.text === 'string' && value.text.trim()) {
-    out.push({ pageIdx: pageIdx ?? 0, type, text: value.text });
+    out.push({ pageIdx: pageIdx ?? 0, type, text: value.text, bbox });
   }
   if (typeof value.content === 'string' && value.content.trim()) {
-    out.push({ pageIdx: pageIdx ?? 0, type, text: value.content });
+    out.push({ pageIdx: pageIdx ?? 0, type, text: value.content, bbox });
   }
 
   if (value.content && typeof value.content === 'object') {
-    collectContentBlocks(value.content, pageIdx, type, out);
+    collectContentBlocks(value.content, pageIdx, type, bbox, out);
   }
 
   for (const key of Object.keys(value)) {
     if (['type', 'text', 'page_idx', 'bbox', 'content', 'sub_type', 'image_path'].includes(key)) {
       continue;
     }
-    collectContentBlocks(value[key], pageIdx, type, out);
+    collectContentBlocks(value[key], pageIdx, type, bbox, out);
+  }
+}
+
+function normalizeLayout(contentList: any): RawLayoutBlock[] {
+  const blocks: ContentBlock[] = [];
+  collectContentBlocks(contentList, undefined, undefined, undefined, blocks);
+
+  const seen = new Set<string>();
+  const out: RawLayoutBlock[] = [];
+  for (const b of blocks) {
+    const text = b.text.trim();
+    if (!text) continue;
+    const dedupeKey = `${b.pageIdx}|${b.type}|${text.slice(0, 80)}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      type: b.type,
+      page: b.pageIdx + 1,
+      bbox: b.bbox,
+      text,
+    });
+  }
+  return out;
+}
+
+/**
+ * Parse the content_list from a preserved MinerU result zip and return the
+ * normalized layout blocks, or null when the archive is missing/malformed.
+ * Used to backfill layout.json for documents converted before layout output
+ * existed.
+ */
+export function readMineruContentList(zipPath: string): RawLayoutBlock[] | null {
+  try {
+    if (!fs.existsSync(zipPath)) return null;
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(zipPath);
+    let contentList: any = null;
+    for (const entry of zip.getEntries()) {
+      if (/content_list(_v2)?\.json$/i.test(entry.entryName)) {
+        const parsed = JSON.parse(entry.getData().toString('utf-8'));
+        if (/content_list\.json$/i.test(entry.entryName)) {
+          contentList = parsed;
+        } else if (!contentList) {
+          contentList = parsed;
+        }
+      }
+    }
+    if (!contentList) return null;
+    return normalizeLayout(contentList);
+  } catch (e) {
+    debugLog('MineruConverter', 'readMineruContentList failed', { zipPath, error: e });
+    return null;
   }
 }
 

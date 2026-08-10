@@ -32,6 +32,8 @@ import path from 'path';
 import { BibManager } from './bib/bibManager';
 import { CiteSuggest } from './citeSuggest/citeSuggest';
 import { isZoteroRunning } from './bib/helpers';
+import { RagIndexer } from './rag/indexer';
+import { backfillLiteratureLayouts } from './rag/backfill';
 import * as fs from 'fs';
 
 export default class ReferenceList extends Plugin {
@@ -40,6 +42,7 @@ export default class ReferenceList extends Plugin {
   tooltipManager: TooltipManager;
   cacheDir: string;
   bibManager: BibManager;
+  ragIndexer: RagIndexer;
   _initPromise: PromiseCapability<void>;
   lastActiveFile: TFile | null = null;
   private lastMatchQuery: string = '';
@@ -74,6 +77,11 @@ export default class ReferenceList extends Plugin {
     this.cacheDir = path.join(getVaultRoot(), '.pandoc');
     this.emitter = new Events();
     this.bibManager = new BibManager(this);
+    this.ragIndexer = new RagIndexer(
+      this.app,
+      getVaultRoot(),
+      this.settings.convertOutputPath || 'literature'
+    );
     this.initPromise.promise
       .then(() => {
         debugLog('Main', 'initPromise.then started');
@@ -133,6 +141,34 @@ export default class ReferenceList extends Plugin {
       this.app.workspace.trigger('parse-style-settings');
     });
 
+    // RAG full-text index: build in the background, keep it incrementally updated.
+    this.initRagIndex();
+
+    const ragUpdate = debounce(
+      () => {
+        if (this.settings.enableRagSearch) {
+          this.ragIndexer.incrementalUpdate().catch(() => {});
+        }
+      },
+      5000,
+      false
+    );
+    this.registerEvent(
+      app.vault.on('create', (file) => {
+        if (file instanceof TFile && file.extension === 'md') ragUpdate();
+      })
+    );
+    this.registerEvent(
+      app.vault.on('modify', (file) => {
+        if (file instanceof TFile && file.extension === 'md') ragUpdate();
+      })
+    );
+    this.registerEvent(
+      app.vault.on('delete', (file) => {
+        if (file instanceof TFile && file.extension === 'md') ragUpdate();
+      })
+    );
+
     this.addCommand({
       id: 'focus-reference-list-view',
       name: t('Show Current References'),
@@ -153,6 +189,25 @@ export default class ReferenceList extends Plugin {
         if (view) {
           view.mode = 'all';
           view.renderAllReferences();
+        }
+      },
+    });
+
+    this.addCommand({
+      id: 'rag-search-vault',
+      name: 'Search full vault (RAG)',
+      callback: async () => {
+        const view = await this.initLeaf();
+        if (view) {
+          view.mode = 'all';
+          view.searchScope = 'vault';
+          view.renderAllReferences();
+          setTimeout(() => {
+            const input = view.contentEl.querySelector(
+              '.pwc-manager-search input'
+            ) as HTMLInputElement;
+            if (input) input.focus();
+          }, 300);
         }
       },
     });
@@ -342,6 +397,34 @@ export default class ReferenceList extends Plugin {
       .getLeavesOfType(viewType)
       .forEach((leaf) => leaf.detach());
     this.bibManager.destroy();
+    this.ragIndexer.destroy();
+  }
+
+  async initRagIndex(): Promise<void> {
+    if (!this.settings.enableRagSearch) return;
+    try {
+      const loaded = await this.ragIndexer.loadCache();
+      if (loaded) {
+        await this.ragIndexer.incrementalUpdate();
+      } else {
+        await this.ragIndexer.buildAll();
+      }
+      debugLog('Main', 'RAG index ready', { docs: this.ragIndexer.index.docCount });
+      // Backfill layout.json from preserved MinerU zips in the background.
+      setTimeout(() => {
+        try {
+          const n = backfillLiteratureLayouts(
+            getVaultRoot(),
+            this.settings.convertOutputPath || 'literature'
+          );
+          if (n > 0) debugLog('Main', 'Backfilled literature layouts', { count: n });
+        } catch (e) {
+          debugLog('Main', 'Layout backfill failed', e);
+        }
+      }, 3000);
+    } catch (e) {
+      debugLog('Main', 'RAG index initialization failed', e);
+    }
   }
 
   statusBarIcon: HTMLElement;

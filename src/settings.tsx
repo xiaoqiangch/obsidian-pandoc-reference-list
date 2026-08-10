@@ -38,6 +38,10 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   convertEngine: 'mineru',
   mineruApiToken: '',
   mineruModelVersion: 'vlm',
+  enableRagSearch: true,
+  enableSemanticReuse: false,
+  ragMaxHitsPerDoc: 3,
+  ragSnippetLength: 320,
 };
 
 export interface ZoteroGroup {
@@ -78,6 +82,10 @@ export interface ReferenceListSettings {
   convertEngine: 'mineru' | 'llm';
   mineruApiToken: string;
   mineruModelVersion: string;
+  enableRagSearch?: boolean;
+  enableSemanticReuse?: boolean;
+  ragMaxHitsPerDoc?: number;
+  ragSnippetLength?: number;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -596,6 +604,76 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.convertModelName)
           .onChange((value) => {
             this.plugin.settings.convertModelName = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl('h3', { text: 'RAG 全文检索' });
+
+    new Setting(containerEl)
+      .setName('启用 RAG 全文检索')
+      .setDesc('对文献库（及全库）markdown 建立本地 BM25 索引，在文献库搜索框中可切换“文献库 / 全库”模式进行全文检索，文献库命中可定位到 PDF 原文。')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(!!this.plugin.settings.enableRagSearch)
+          .onChange(async (value) => {
+            this.plugin.settings.enableRagSearch = value;
+            this.plugin.saveSettings();
+            if (value) {
+              new Notice('正在构建全文索引...');
+              await this.plugin.ragIndexer.buildAll();
+              new Notice('全文索引构建完成');
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('语义检索增强（复用 shadow-writer-plus）')
+      .setDesc('启用后，检索结果会额外叠加 shadow-writer-plus 的向量语义检索（需该插件已启用并配置了可用的嵌入模型）。未检测到时自动忽略。')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(!!this.plugin.settings.enableSemanticReuse)
+          .onChange((value) => {
+            this.plugin.settings.enableSemanticReuse = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('重建索引')
+      .setDesc('清空缓存并重新索引整个仓库（首次启用或数据变化较大时使用）。')
+      .addButton((button) =>
+        button
+          .setButtonText('立即重建')
+          .onClick(async () => {
+            new Notice('正在重建全文索引...');
+            await this.plugin.ragIndexer.buildAll();
+            new Notice('全文索引重建完成');
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('每篇文献最大命中数')
+      .setDesc('文献库命中展示时，每篇最多给出的 PDF 定位数量。')
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 10, 1)
+          .setValue(this.plugin.settings.ragMaxHitsPerDoc || 3)
+          .onChange((value) => {
+            this.plugin.settings.ragMaxHitsPerDoc = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('片段长度')
+      .setDesc('检索结果中显示的上下文片段最大字符数。')
+      .addSlider((slider) =>
+        slider
+          .setLimits(120, 800, 20)
+          .setValue(this.plugin.settings.ragSnippetLength || 320)
+          .onChange((value) => {
+            this.plugin.settings.ragSnippetLength = value;
             this.plugin.saveSettings();
           })
       );

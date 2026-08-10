@@ -88,6 +88,28 @@ export async function getPdfPageCount(pdfPath: string): Promise<number> {
   return count;
 }
 
+/** PDF user-space (pt) size of a single page at scale 1. */
+export async function getPdfPageSize(
+  pdfPath: string,
+  pageNumber: number
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const fs = require('fs');
+    const data = new Uint8Array(fs.readFileSync(pdfPath));
+    const loadingTask = pdfjsLib.getDocument({ data });
+    const pdfDoc = await loadingTask.promise;
+    const page = await pdfDoc.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+    const size = { width: viewport.width, height: viewport.height };
+    page.cleanup();
+    await pdfDoc.destroy();
+    return size;
+  } catch (e) {
+    debugLog('PdfRenderer', `Failed to get page size for page ${pageNumber}`, e);
+    return null;
+  }
+}
+
 async function extractImagesFromPage(
   page: any,
   pageNumber: number,

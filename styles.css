@@ -811,3 +811,113 @@ body {
     color: var(--text-success, #4caf50);
 }
 
+
+/* ===== RAG full-text search ===== */
+.pwc-manager-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.pwc-search-scope {
+    flex-shrink: 0;
+    font-size: var(--font-ui-small);
+    padding: 2px 8px;
+    border-radius: var(--radius-s, 4px);
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary-alt);
+    color: var(--text-normal);
+    cursor: pointer;
+}
+
+.pwc-search-scope:hover {
+    background: var(--background-modifier-hover);
+}
+
+.pwc-rag-group {
+    margin-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: 8px;
+}
+
+.pwc-rag-group-title {
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+}
+
+.pwc-rag-card {
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    background: var(--background-secondary);
+}
+
+.pwc-rag-card-title {
+    font-weight: 600;
+    font-size: var(--font-ui-small);
+    color: var(--text-normal);
+    margin-bottom: 2px;
+}
+
+.pwc-rag-card-path {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-bottom: 4px;
+    word-break: break-all;
+}
+
+.pwc-rag-snippet {
+    font-size: var(--font-ui-small);
+    color: var(--text-normal);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--background-primary);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+}
+
+.pwc-rag-snippet mark {
+    background: var(--text-highlight-bg, rgba(255, 211, 0, 0.4));
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.pwc-rag-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.pwc-rag-btn {
+    font-size: var(--font-ui-smaller);
+    padding: 2px 10px;
+    border-radius: var(--radius-s, 4px);
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary-alt);
+    color: var(--text-normal);
+    cursor: pointer;
+}
+
+.pwc-rag-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.pwc-rag-btn.mod-cta {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+}
+
+.pwc-rag-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+}

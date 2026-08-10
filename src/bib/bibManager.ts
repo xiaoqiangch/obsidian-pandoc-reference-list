@@ -3,6 +3,8 @@ import CSL from 'citeproc';
 import ReferenceList from '../main';
 import { PartialCSLEntry } from './types';
 import Fuse from 'fuse.js';
+import { getPdfPageSize } from '../converter/pdfRenderer';
+import { mineruBboxToPdfUserSpace } from '../rag/retrieval';
 import {
   bibToCSL,
   getBibPath,
@@ -1263,6 +1265,103 @@ export class BibManager {
 
     // For external files, use virtual link (symlink) to open in Obsidian
     await this.openExternalFileInternal(link);
+  }
+
+  /**
+   * Open a PDF at a specific page (and optionally highlight a bbox region).
+   * Uses obsidian-pdf-plus when available, otherwise falls back to the native
+   * Obsidian `#page=` link.
+   */
+  async openPdfAtLocation(link: string, page?: number, bbox?: number[]) {
+    const vaultRoot = getVaultRoot();
+    let relativePath = '';
+    let isInsideVault = false;
+
+    if (link.startsWith(vaultRoot)) {
+      isInsideVault = true;
+      relativePath = link
+        .substring(vaultRoot.length)
+        .replace(/^[\\\/]/, '');
+    }
+
+    let tfile: TFile | null = null;
+    if (isInsideVault) {
+      const f = app.vault.getAbstractFileByPath(relativePath);
+      if (f instanceof TFile) tfile = f;
+    }
+    if (!tfile) {
+      tfile = await this.ensureVaultLinkFile(link);
+    }
+    if (!tfile) {
+      require('electron').shell.openPath(link);
+      return;
+    }
+
+    let subpath = '';
+    if (page && page > 0) subpath = `#page=${page}`;
+    if (bbox && bbox.length === 4 && page) {
+      const size = await getPdfPageSize(link, page);
+      if (size) {
+        const rect = mineruBboxToPdfUserSpace(bbox, size.width, size.height);
+        subpath += `&rect=${rect.join(',')}`;
+      }
+    }
+
+    const pdfPlus = (app.plugins.plugins as any)['pdf-plus'] ?? (window as any).pdfPlus;
+    const leaf = app.workspace.getRightLeaf(false);
+
+    if (pdfPlus?.lib?.workspace?.openPDFLinkTextInLeaf) {
+      try {
+        await pdfPlus.lib.workspace.openPDFLinkTextInLeaf(leaf, `${tfile.path}${subpath}`, '');
+        app.workspace.revealLeaf(leaf);
+        return;
+      } catch (e) {
+        debugLog('BibManager', 'pdf-plus open failed, falling back', e);
+      }
+    }
+
+    // Fallback: native Obsidian link opening (supports #page=, not rect).
+    await app.workspace.openLinkText(`${tfile.path}${subpath}`, '');
+    app.workspace.revealLeaf(leaf);
+  }
+
+  private async ensureVaultLinkFile(link: string): Promise<TFile | null> {
+    const vaultRoot = getVaultRoot();
+    const linksDirName = '_bib-links';
+    const linksDir = path.join(vaultRoot, linksDirName);
+
+    if (!fs.existsSync(linksDir)) {
+      fs.mkdirSync(linksDir, { recursive: true });
+    }
+
+    const crypto = require('crypto');
+    const hash = crypto.createHash('md5').update(link).digest('hex');
+    const ext = path.extname(link);
+    const fileName = `${path.parse(link).name}_${hash.slice(0, 8)}${ext}`;
+    const linkPath = path.join(linksDir, fileName);
+
+    if (!fs.existsSync(linkPath)) {
+      try {
+        fs.symlinkSync(link, linkPath, 'file');
+      } catch (e: any) {
+        if (e.code !== 'EEXIST') return null;
+      }
+    }
+
+    try {
+      await app.vault.adapter.list(linksDirName);
+    } catch {
+      // ignore
+    }
+
+    let tfile = app.vault.getAbstractFileByPath(`${linksDirName}/${fileName}`);
+    let attempts = 0;
+    while (!(tfile instanceof TFile) && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      tfile = app.vault.getAbstractFileByPath(`${linksDirName}/${fileName}`);
+      attempts++;
+    }
+    return tfile instanceof TFile ? tfile : null;
   }
 
   async openExternalFileInternal(link: string) {
