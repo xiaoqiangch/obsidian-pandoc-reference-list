@@ -1,5 +1,5 @@
 import { locateTextLines, writeLayoutFile, readLayoutFile } from '../layout';
-import { mineruBboxToPdfUserSpace, buildSnippet, findLayoutHits, findLayoutBlocksByLines } from '../retrieval';
+import { mineruBboxToPdfUserSpace, buildSnippet, findLayoutHits, findLayoutBlocksByLines, findRagPositions } from '../retrieval';
 import { LayoutBlock } from '../layout';
 
 const os = require('os');
@@ -74,5 +74,44 @@ describe('snippet + layout hits', () => {
     const hits = findLayoutBlocksByLines(layout, 3, 5);
     expect(hits).toHaveLength(1);
     expect(hits[0].page).toBe(1);
+  });
+});
+
+describe('findRagPositions', () => {
+  const content = [
+    '第一行没有关键词',
+    '莱茵河流过这里',
+    '中间无关行',
+    '又一次提到莱茵河',
+    '结尾也没有',
+  ].join('\n');
+
+  const layout: LayoutBlock[] = [
+    { id: 'a', type: 'text', page: 3, bbox: [10, 20, 90, 40], text: '莱茵河流过这里', lineStart: 2, lineEnd: 2 },
+    { id: 'b', type: 'text', page: 7, bbox: [10, 20, 90, 40], text: '又一次提到莱茵河', lineStart: 4, lineEnd: 4 },
+  ];
+
+  test('lists every matching line with its snippet window', () => {
+    const positions = findRagPositions(content, ['莱茵'], layout, 200);
+    expect(positions.map((p) => p.line)).toEqual([2, 4]);
+    expect(positions[0].snippet).toContain('莱茵河流过这里');
+  });
+
+  test('attaches page/bbox from the covering layout block', () => {
+    const positions = findRagPositions(content, ['莱茵'], layout, 200);
+    expect(positions[0].page).toBe(3);
+    expect(positions[0].bbox).toEqual([10, 20, 90, 40]);
+    expect(positions[1].page).toBe(7);
+  });
+
+  test('omits page when no layout block covers the line', () => {
+    const positions = findRagPositions(content, ['莱茵'], null, 200);
+    expect(positions).toHaveLength(2);
+    expect(positions[0].page).toBeUndefined();
+  });
+
+  test('returns empty when no term matches', () => {
+    const positions = findRagPositions(content, ['不存在'], layout, 200);
+    expect(positions).toHaveLength(0);
   });
 });

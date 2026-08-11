@@ -890,6 +890,20 @@ body {
     padding: 0 1px;
 }
 
+.pwc-rag-hit {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pwc-rag-hit:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.pwc-rag-hit .pwc-rag-snippet {
+    margin-bottom: 4px;
+}
+
 .pwc-rag-card-actions {
     display: flex;
     align-items: center;

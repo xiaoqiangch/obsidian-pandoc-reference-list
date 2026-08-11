@@ -6,7 +6,7 @@ import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
-import { buildSnippet, findLayoutHits, findLayoutBlocksByLines, readLiteratureLayout, LayoutHit } from './rag/retrieval';
+import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, LayoutHit } from './rag/retrieval';
 import { semanticSearch, SemanticHit } from './rag/semantic';
 
 const fs = require('fs');
@@ -422,7 +422,6 @@ export class ReferenceListView extends ItemView {
     const vaultRoot = getVaultRoot();
     const outputPath = this.plugin.settings.convertOutputPath || 'literature';
     const snippetLen = this.plugin.settings.ragSnippetLength || 180;
-    const maxPerDoc = this.plugin.settings.ragMaxHitsPerDoc || 3;
 
     for (const hit of relevant.slice(0, 30)) {
       const doc = hit.doc;
@@ -432,35 +431,39 @@ export class ReferenceListView extends ItemView {
       } catch {
         continue;
       }
-      const snip = buildSnippet(content, hit.terms, snippetLen);
+
+      const layout =
+        doc.literature && doc.citekey
+          ? readLiteratureLayout(vaultRoot, outputPath, doc.citekey)
+          : null;
+      const positions = findRagPositions(content, hit.terms, layout, snippetLen);
+      if (positions.length === 0) continue;
 
       const card = group.createDiv({ cls: 'pwc-rag-card' });
       card.createEl('div', { cls: 'pwc-rag-card-title', text: doc.title || doc.path });
-      card.createEl('div', { cls: 'pwc-rag-card-path', text: doc.path });
-      const snipEl = card.createDiv({ cls: 'pwc-rag-snippet' });
-      this.appendHighlighted(snipEl, snip.text, hit.terms);
-
-      const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
-      this.addIconAction(actions, 'file-text', t('Open note'), () => {
-        this.openNoteAtLine(doc.path, snip.line);
+      card.createEl('div', {
+        cls: 'pwc-rag-card-path',
+        text: `${doc.path} · 命中 ${positions.length} 处`,
       });
 
-      if (doc.literature && doc.citekey) {
-        const layout = readLiteratureLayout(vaultRoot, outputPath, doc.citekey);
-        const layoutHits = dedupeByPage(findLayoutHits(layout, hit.terms, maxPerDoc));
-        for (const lh of layoutHits) {
-          this.addIconAction(
-            actions,
-            'crosshair',
-            `${t('Locate in PDF')} 第${lh.page}页`,
-            () => {
-              this.locateLiteraturePdf(doc.citekey!, lh);
-            }
-          );
+      for (const pos of positions) {
+        const row = card.createDiv({ cls: 'pwc-rag-hit' });
+        const snipEl = row.createDiv({ cls: 'pwc-rag-snippet' });
+        this.appendHighlighted(snipEl, pos.snippet, hit.terms);
+
+        const actions = row.createDiv({ cls: 'pwc-rag-card-actions' });
+        this.addIconAction(actions, 'file-text', `在 MD 中定位 第${pos.line}行`, () => {
+          this.openNoteAtLine(doc.path, pos.line);
+        });
+        if (doc.literature && doc.citekey && pos.page) {
+          this.addIconAction(actions, 'crosshair', `在 PDF 中定位 第${pos.page}页`, () => {
+            this.locateLiteraturePdf(doc.citekey!, { page: pos.page, bbox: pos.bbox ?? null });
+          });
         }
-        if (layout === null) {
-          actions.createSpan({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
-        }
+      }
+
+      if (doc.literature && doc.citekey && layout === null) {
+        card.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
       }
     }
 

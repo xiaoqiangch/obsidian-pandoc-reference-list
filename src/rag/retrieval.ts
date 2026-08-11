@@ -15,6 +15,14 @@ export interface RagSnippet {
   line: number;
 }
 
+/** A single search hit position inside a converted markdown document. */
+export interface RagPosition {
+  line: number;
+  snippet: string;
+  page?: number;
+  bbox?: number[] | null;
+}
+
 /**
  * Produce a short highlightable snippet around the first line that matches any
  * query term. The view is responsible for actually highlighting the terms.
@@ -55,6 +63,72 @@ export function buildSnippet(content: string, terms: string[], maxLen = 320): Ra
   let text = acc;
   if (text.length > maxLen) text = text.slice(0, maxLen) + '…';
   return { text, line: hitIdx + 1 };
+}
+
+/**
+ * Enumerate every line in the converted markdown that contains a query term.
+ * Each position carries a snippet window around the matching line and, when a
+ * layout block covers that line, the PDF page / bbox for precise positioning.
+ */
+export function findRagPositions(
+  content: string,
+  terms: string[],
+  layout: LayoutBlock[] | null,
+  snippetLen = 180
+): RagPosition[] {
+  const lines = content.split('\n');
+  const lowerTerms = terms.map((t) => t.toLowerCase()).filter((t) => t.length > 0);
+  if (lowerTerms.length === 0) return [];
+
+  const out: RagPosition[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const lower = lines[i].toLowerCase();
+    if (!lowerTerms.some((t) => lower.includes(t))) continue;
+
+    const block = findLayoutBlockAt(layout, i + 1, lowerTerms);
+    out.push({
+      line: i + 1,
+      snippet: buildWindow(lines, i, snippetLen),
+      ...(block ? { page: block.page, bbox: block.bbox } : {}),
+    });
+  }
+  return out;
+}
+
+function findLayoutBlockAt(
+  layout: LayoutBlock[] | null,
+  line: number,
+  lowerTerms: string[]
+): LayoutBlock | null {
+  if (!layout) return null;
+  let fallback: LayoutBlock | null = null;
+  for (const b of layout) {
+    if (b.lineStart < 0 || b.lineEnd < 0) continue;
+    if (line < b.lineStart || line > b.lineEnd) continue;
+    const lower = b.text.toLowerCase();
+    if (lowerTerms.some((t) => lower.includes(t))) return b;
+    if (!fallback) fallback = b;
+  }
+  return fallback;
+}
+
+function buildWindow(lines: string[], idx: number, maxLen: number): string {
+  let start = idx;
+  let end = idx;
+  let acc = lines[idx] || '';
+  while (acc.length < maxLen && (start > 0 || end < lines.length - 1)) {
+    if (start > 0) {
+      start--;
+      acc = lines[start] + '\n' + acc;
+    }
+    if (acc.length >= maxLen) break;
+    if (end < lines.length - 1) {
+      end++;
+      acc = acc + '\n' + lines[end];
+    }
+  }
+  if (acc.length > maxLen) acc = acc.slice(0, maxLen) + '…';
+  return acc;
 }
 
 export function literatureLayoutPath(vaultRoot: string, outputPath: string, citekey: string): string {

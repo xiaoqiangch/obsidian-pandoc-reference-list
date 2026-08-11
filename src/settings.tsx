@@ -40,7 +40,6 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   mineruModelVersion: 'vlm',
   enableRagSearch: true,
   enableSemanticReuse: false,
-  ragMaxHitsPerDoc: 3,
   ragSnippetLength: 180,
 };
 
@@ -84,7 +83,6 @@ export interface ReferenceListSettings {
   mineruModelVersion: string;
   enableRagSearch?: boolean;
   enableSemanticReuse?: boolean;
-  ragMaxHitsPerDoc?: number;
   ragSnippetLength?: number;
 }
 
@@ -649,19 +647,6 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             new Notice('正在重建全文索引...');
             await this.plugin.ragIndexer.buildAll();
             new Notice('全文索引重建完成');
-          })
-      );
-
-    new Setting(containerEl)
-      .setName('每篇文献最大命中数')
-      .setDesc('文献库命中展示时，每篇最多给出的 PDF 定位数量。')
-      .addSlider((slider) =>
-        slider
-          .setLimits(1, 10, 1)
-          .setValue(this.plugin.settings.ragMaxHitsPerDoc || 3)
-          .onChange((value) => {
-            this.plugin.settings.ragMaxHitsPerDoc = value;
-            this.plugin.saveSettings();
           })
       );
 
