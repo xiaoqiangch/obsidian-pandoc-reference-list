@@ -913,42 +913,80 @@ body {
     color: var(--text-muted);
 }
 
-/* RAG 全文命中：复用 Obsidian 原生搜索结果样式（文件分组可折叠、每条命中圆角边框、数量角标） */
-.pwc-rag-group .search-result-container {
+/* RAG 全文命中：仿 Obsidian 原生搜索结果样式，但完全自包含（不依赖核心
+   tree-item/search-result 类），折叠用原生 <details>/<summary> 保证可用 */
+.pwc-rag-files {
     margin-top: 4px;
 }
 
-.pwc-rag-group .search-result-file-title {
+.pwc-rag-file {
+    margin: 0;
+}
+
+.pwc-rag-file-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--nav-item-padding, 4px 8px);
+    border-radius: var(--radius-s, 4px);
     cursor: pointer;
+    font-size: var(--nav-item-size, var(--font-ui-small));
+    line-height: var(--line-height-tight, 1.4);
+    color: var(--nav-item-color, var(--text-normal));
+    user-select: none;
 }
 
-.pwc-rag-group .search-result-file-title:hover {
-    background: var(--background-modifier-hover);
-}
-
-.pwc-rag-group .tree-item-children {
-    padding-left: 14px;
-}
-
-.pwc-rag-group .tree-item.is-collapsed > .tree-item-children,
-.pwc-rag-group .tree-item-self.is-collapsed > .tree-item-children {
+.pwc-rag-file-header::-webkit-details-marker,
+.pwc-rag-file-header::marker {
     display: none;
 }
 
-.pwc-rag-group .collapse-icon {
-    flex: 0 0 auto;
+@media (hover: hover) {
+    .pwc-rag-file-header:hover {
+        color: var(--nav-item-color-hover, var(--text-normal));
+        background-color: var(--nav-item-background-hover, var(--background-modifier-hover));
+    }
 }
 
-.pwc-rag-group .collapse-icon svg {
+.pwc-rag-file-icon {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    color: var(--icon-color, var(--text-muted));
+}
+
+.pwc-rag-file-icon svg.svg-icon {
+    --icon-size: var(--icon-xs, 12px);
+    --icon-stroke: var(--icon-s-stroke-width, 2px);
+    width: 12px;
+    height: 12px;
     transition: transform 100ms ease-in-out;
 }
 
-.pwc-rag-group .tree-item.is-collapsed > .tree-item-self .collapse-icon svg,
-.pwc-rag-group .tree-item-self.is-collapsed .collapse-icon svg {
+.pwc-rag-file:not([open]) > .pwc-rag-file-header .pwc-rag-file-icon svg.svg-icon {
     transform: rotate(-90deg);
 }
 
-.pwc-rag-group .search-result-file-match {
+.pwc-rag-file-name {
+    flex: 1 1 auto;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.pwc-rag-file-count {
+    flex: 0 0 auto;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+    line-height: 1;
+    border-radius: var(--radius-s);
+}
+
+.pwc-rag-file-matches {
+    padding: 2px 0 4px 14px;
+}
+
+.pwc-rag-match {
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-m, 6px);
     background: var(--background-primary);
@@ -956,11 +994,11 @@ body {
     margin: 4px 0;
 }
 
-.pwc-rag-group .search-result-file-match:hover {
+.pwc-rag-match:hover {
     background: var(--background-secondary);
 }
 
-.pwc-rag-group .search-result-file-match-text {
+.pwc-rag-match-text {
     font-size: var(--font-ui-small);
     color: var(--text-normal);
     line-height: 1.5;
@@ -968,13 +1006,13 @@ body {
     word-break: break-word;
 }
 
-.pwc-rag-group .search-result-file-matched-text {
+.pwc-rag-match-text mark {
     background: var(--text-highlight-bg, rgba(255, 211, 0, 0.4));
     color: inherit;
     border-radius: 2px;
     padding: 0 1px;
 }
 
-.pwc-rag-group .pwc-rag-card-actions {
+.pwc-rag-match .pwc-rag-card-actions {
     margin-top: 4px;
 }

@@ -428,6 +428,7 @@ export class ReferenceListView extends ItemView {
       doc: any;
       layout: LayoutBlock[] | null;
       positions: RagPosition[];
+      terms: string[];
     }
     const results: DocHits[] = [];
     for (const hit of relevant.slice(0, 30)) {
@@ -445,7 +446,7 @@ export class ReferenceListView extends ItemView {
           : null;
       const positions = findRagPositions(content, hit.terms, layout, snippetLen);
       if (positions.length === 0) continue;
-      results.push({ doc, layout, positions });
+      results.push({ doc, layout, positions, terms: hit.terms });
     }
 
     if (results.length === 0) {
@@ -459,38 +460,27 @@ export class ReferenceListView extends ItemView {
       text: `${scope === 'library' ? t('Full-text hits') : '全文命中'} · 共 ${totalHits} 处（${results.length} 篇）`,
     });
 
-    const resultContainer = group.createDiv({ cls: 'search-result-container' });
+    const resultContainer = group.createDiv({ cls: 'pwc-rag-files' });
 
-    for (const { doc, layout, positions } of results) {
-      const item = resultContainer.createDiv({ cls: 'tree-item' });
+    for (const { doc, layout, positions, terms } of results) {
+      // Native <details>/<summary> collapse: works independently of Obsidian's
+      // own tree-item classes / runtime, so expansion is guaranteed.
+      const details = resultContainer.createEl('details', { cls: 'pwc-rag-file' });
+      details.setAttr('open', '');
 
-      const header = item.createDiv({ cls: 'tree-item-self search-result-file-title is-clickable' });
-      header.setAttr('data-path', doc.path);
+      const summary = details.createEl('summary', { cls: 'pwc-rag-file-header' });
+      const icon = summary.createDiv({ cls: 'pwc-rag-file-icon' });
+      setIcon(icon, 'chevron-down');
+      summary.createDiv({ cls: 'pwc-rag-file-name', text: doc.title || doc.path });
+      const count = summary.createDiv({ cls: 'pwc-rag-file-count', text: String(positions.length) });
+      count.setAttr('aria-label', `${positions.length} 处命中`);
 
-      const collapse = header.createDiv({ cls: 'tree-item-icon collapse-icon' });
-      setIcon(collapse, 'chevron-down');
-
-      header.createDiv({ cls: 'tree-item-inner', text: doc.title || doc.path });
-
-      const flair = header.createDiv({ cls: 'tree-item-flair', text: String(positions.length) });
-      flair.setAttr('aria-label', `${positions.length} 处命中`);
-
-      const children = item.createDiv({ cls: 'tree-item-children' });
-
-      const setCollapsed = (collapsed: boolean) => {
-        item.toggleClass('is-collapsed', collapsed);
-        header.toggleClass('is-collapsed', collapsed);
-        collapse.toggleClass('is-collapsed', collapsed);
-      };
-      header.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        setCollapsed(!item.hasClass('is-collapsed'));
-      });
+      const matches = details.createDiv({ cls: 'pwc-rag-file-matches' });
 
       for (const pos of positions) {
-        const match = children.createDiv({ cls: 'search-result-file-match' });
-        const textEl = match.createDiv({ cls: 'search-result-file-match-text' });
-        this.appendHighlighted(textEl, pos.snippet, hit.terms);
+        const match = matches.createDiv({ cls: 'pwc-rag-match' });
+        const textEl = match.createDiv({ cls: 'pwc-rag-match-text' });
+        this.appendHighlighted(textEl, pos.snippet, terms);
 
         const actions = match.createDiv({ cls: 'pwc-rag-card-actions' });
         this.addIconAction(actions, 'file-text', `在 MD 中定位 第${pos.line}行`, () => {
@@ -504,7 +494,7 @@ export class ReferenceListView extends ItemView {
       }
 
       if (doc.literature && doc.citekey && layout === null) {
-        children.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
+        matches.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
       }
     }
 
@@ -605,7 +595,7 @@ export class ReferenceListView extends ItemView {
       if (!term) continue;
       const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`(${escaped})`, 'gi');
-      safe = safe.replace(re, '<span class="search-result-file-matched-text">$1</span>');
+      safe = safe.replace(re, '<mark>$1</mark>');
     }
     el.innerHTML = safe;
   }
