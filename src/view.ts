@@ -60,6 +60,10 @@ export class ReferenceListView extends ItemView {
 
   conversionProgress: Map<string, ConvertProgress> = new Map();
 
+  private ragNavButtons: Map<string, HTMLElement> | null = null;
+  private _lastAllFingerprint = '';
+  private _lastAllBibRef: object | null = null;
+
   private debouncedRender = debounce(() => {
     this.displayedCount = 50;
     this.renderAllReferencesList();
@@ -110,6 +114,14 @@ export class ReferenceListView extends ItemView {
       }
     } else {
       // For 'all' mode, we still do a full refresh for now as it's less frequent
+      const bibRef = this.plugin.bibManager.bibCache;
+      const fingerprint = this.listFingerprint();
+      if (this._lastAllFingerprint === fingerprint && this._lastAllBibRef === bibRef) {
+        debugLog('View', 'List inputs unchanged, skipping redundant re-render');
+        return;
+      }
+      this._lastAllFingerprint = fingerprint;
+      this._lastAllBibRef = bibRef;
       this.contentEl.empty();
       this.renderHeader();
       const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
@@ -400,10 +412,9 @@ export class ReferenceListView extends ItemView {
     const relevant = scope === 'library' ? hits.filter((h) => h.doc.literature) : hits;
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });
-    if (scope === 'library') {
-      group.createDiv({ cls: 'pwc-rag-group-title', text: t('Full-text hits') });
-    }
+    group.setAttr('data-rag-group', 'fulltext');
     if (relevant.length === 0) {
+      group.createDiv({ cls: 'pwc-rag-group-title', text: t('Full-text hits') });
       group.createDiv({ cls: 'pane-empty', text: scope === 'vault' ? t('No results found in vault.') : t('No full-text hits') });
       return;
     }
@@ -446,9 +457,8 @@ export class ReferenceListView extends ItemView {
     const totalHits = results.reduce((n, r) => n + r.positions.length, 0);
     group.createDiv({
       cls: 'pwc-rag-group-title',
-      text: `${scope === 'library' ? t('Full-text hits') : '全文命中'} · 共 ${totalHits} 处（${results.length} 篇）`,
+      text: `${t('Full-text hits')} · 共 ${totalHits} 处（${results.length} 篇）`,
     });
-
     const resultContainer = group.createDiv({ cls: 'pwc-rag-files' });
 
     for (const { doc, layout, positions, terms } of results) {
@@ -540,6 +550,7 @@ export class ReferenceListView extends ItemView {
     const snippetLen = this.plugin.settings.ragSnippetLength || 180;
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });
+    group.setAttr('data-rag-group', 'semantic');
     group.createDiv({ cls: 'pwc-rag-group-title', text: `语义命中 · ${vecHits.length} 处` });
     const resultContainer = group.createDiv({ cls: 'pwc-rag-files' });
 
@@ -610,6 +621,63 @@ export class ReferenceListView extends ItemView {
     return btn;
   }
 
+  /** Signature of the inputs that drive the 'all' list render. When unchanged,
+   *  a re-render is redundant and would reset scroll/collapse for no reason. */
+  private listFingerprint(): string {
+    const s = this.plugin.settings;
+    return JSON.stringify({
+      mode: this.mode,
+      searchQuery: this.searchQuery,
+      searchScope: this.searchScope,
+      isRecentOnly: this.isRecentOnly,
+      showAddSection: this.showAddSection,
+      displayedCount: this.displayedCount,
+      sortField: this.sortField,
+      sortDirection: this.sortDirection,
+      filterType: this.filterType,
+      filterSource: this.filterSource,
+      enableRagSearch: s.enableRagSearch,
+      ragSnippetLength: s.ragSnippetLength,
+      enableNativeSemantic: s.enableNativeSemantic,
+      semanticTopK: s.semanticTopK,
+      convertOutputPath: s.convertOutputPath,
+      pathToBibliography: s.pathToBibliography,
+    });
+  }
+
+  /** Sticky quick-jump nav for the 文献条目 / 正文命中 / 语义命中 groups. */
+  private renderGroupNav(container: HTMLElement) {
+    const nav = container.createDiv({ cls: 'pwc-rag-nav' });
+    this.ragNavButtons = new Map<string, HTMLElement>();
+    const groups = [
+      { key: 'meta', label: t('Reference entries') },
+      { key: 'fulltext', label: t('Full-text hits') },
+      { key: 'semantic', label: '语义命中' },
+    ];
+    for (const g of groups) {
+      const btn = nav.createEl('button', { cls: 'pwc-rag-nav-btn', text: g.label });
+      btn.setAttr('data-group', g.key);
+      btn.addEventListener('click', () => this.jumpToGroup(g.key));
+      this.ragNavButtons.set(g.key, btn);
+    }
+  }
+
+  /** Hide nav buttons whose group did not render any results. */
+  private updateGroupNav() {
+    if (!this.ragNavButtons) return;
+    this.ragNavButtons.forEach((btn, key) => {
+      const group = this.contentEl.querySelector(`[data-rag-group="${key}"]`);
+      const isEmpty = !group || !!group.querySelector('.pane-empty');
+      btn.toggleClass('is-hidden', isEmpty);
+    });
+  }
+
+  private jumpToGroup(key: string) {
+    const target = this.contentEl.querySelector(`[data-rag-group="${key}"]`) as HTMLElement | null;
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   /** Render bibliography entries (bib/Zotero metadata) matching the query. */
   renderMetaHits(container: HTMLElement, query: string) {
     const q = query.trim().toLowerCase();
@@ -620,6 +688,7 @@ export class ReferenceListView extends ItemView {
     if (matches.length === 0) return;
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });
+    group.setAttr('data-rag-group', 'meta');
     group.createDiv({ cls: 'pwc-rag-group-title', text: t('Reference entries') });
 
     for (const entry of matches.slice(0, 20)) {
@@ -734,6 +803,9 @@ export class ReferenceListView extends ItemView {
   async renderAllReferencesList(container?: HTMLElement) {
     debugLog('View', 'renderAllReferencesList started');
     const parent = container || this.contentEl;
+    this._lastAllFingerprint = this.listFingerprint();
+    this._lastAllBibRef = this.plugin.bibManager.bibCache;
+
     let listContainer = parent.querySelector('.pwc-manager-list') as HTMLElement;
     if (!listContainer) {
       listContainer = parent.createDiv({ cls: 'pwc-manager-list' });
@@ -741,12 +813,16 @@ export class ReferenceListView extends ItemView {
     listContainer.empty();
 
     if (this.searchQuery.trim() && this.searchScope === 'vault') {
+      this.renderGroupNav(listContainer);
       this.renderMetaHits(listContainer, this.searchQuery);
       await this.renderRagResults(listContainer, 'vault');
+      this.updateGroupNav();
       return;
     }
     if (this.searchQuery.trim() && this.searchScope === 'library') {
+      this.renderGroupNav(listContainer);
       await this.renderRagResults(listContainer, 'library');
+      this.updateGroupNav();
     }
     
     if (this.showAddSection) {

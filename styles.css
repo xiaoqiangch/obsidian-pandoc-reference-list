@@ -1030,3 +1030,39 @@ body {
 .pwc-rag-match .pwc-rag-card-actions {
     margin-top: 4px;
 }
+
+/* RAG 分组快速跳转导航条（sticky，悬浮在结果列表顶部） */
+.pwc-rag-nav {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 0;
+    margin-bottom: 4px;
+    background: var(--background-primary);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pwc-rag-nav-btn {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-normal);
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s, 4px);
+    padding: 2px 8px;
+    cursor: pointer;
+}
+
+.pwc-rag-nav-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.pwc-rag-nav-btn.is-hidden {
+    display: none;
+}
+
+.pwc-rag-group {
+    scroll-margin-top: 32px;
+}
