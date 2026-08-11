@@ -18,6 +18,16 @@ export const viewType = 'ReferenceListView';
 type SortField = 'year' | 'title' | 'author' | 'addDate' | 'id';
 type SortDirection = 'asc' | 'desc';
 
+/** UI state captured before an 'all'-mode re-render so it can be restored
+ *  afterwards (keeps scroll position and collapsed/expanded file groups when
+ *  clicking an entry opens a note → active-leaf-change → re-render). */
+interface ListState {
+  scrollTop: number;
+  knownPaths: Set<string>;
+  openPaths: Set<string>;
+  query: string;
+}
+
 /** Match an entry against the query across bibliographic metadata fields. */
 function matchesMeta(entry: PartialCSLEntry, q: string): boolean {
   if (entry.id && entry.id.toLowerCase().includes(q)) return true;
@@ -61,11 +71,12 @@ export class ReferenceListView extends ItemView {
   conversionProgress: Map<string, ConvertProgress> = new Map();
 
   private ragNavButtons: Map<string, HTMLElement> | null = null;
-  private _lastAllFingerprint = '';
-  private _lastAllBibRef: object | null = null;
+  private _pendingListState: ListState | null = null;
+  private _skipStateCapture = false;
 
   private debouncedRender = debounce(() => {
     this.displayedCount = 50;
+    this.syncHeaderToMode();
     this.renderAllReferencesList();
   }, 300);
 
@@ -114,14 +125,8 @@ export class ReferenceListView extends ItemView {
       }
     } else {
       // For 'all' mode, we still do a full refresh for now as it's less frequent
-      const bibRef = this.plugin.bibManager.bibCache;
-      const fingerprint = this.listFingerprint();
-      if (this._lastAllFingerprint === fingerprint && this._lastAllBibRef === bibRef) {
-        debugLog('View', 'List inputs unchanged, skipping redundant re-render');
-        return;
-      }
-      this._lastAllFingerprint = fingerprint;
-      this._lastAllBibRef = bibRef;
+      this._pendingListState = this._skipStateCapture ? null : this.captureListState();
+      this._skipStateCapture = false;
       this.contentEl.empty();
       this.renderHeader();
       const container = this.contentEl.createDiv({ cls: 'pwc-view-content' });
@@ -285,6 +290,25 @@ export class ReferenceListView extends ItemView {
 
     if (this.mode === 'all') {
       this.renderFilterSortToolbar(header);
+    }
+  }
+
+  /** When entering 'all' mode via search (debouncedRender path), re-render the
+   *  header so the filter/sort toolbar appears — without wiping the list. */
+  private syncHeaderToMode() {
+    const header = this.contentEl.querySelector(
+      '.pwc-reference-list__header'
+    ) as HTMLElement | null;
+    if (!header) return;
+    const hasToolbar = !!header.querySelector('.pwc-filter-toolbar');
+    if (this.mode === 'all' && !hasToolbar) {
+      this.renderFilterSortToolbar(header);
+    } else if (this.mode === 'current' && hasToolbar) {
+      header.querySelector('.pwc-filter-toolbar')?.remove();
+    }
+    const titleEl = header.querySelector('.pwc-reference-list__title')?.firstChild as HTMLElement | null;
+    if (titleEl) {
+      titleEl.textContent = this.mode === 'current' ? t('Current References') : t('All References');
     }
   }
 
@@ -493,6 +517,7 @@ export class ReferenceListView extends ItemView {
     terms: string[]
   ) {
     const details = parent.createEl('details', { cls: 'pwc-rag-file' });
+    details.setAttr('data-path', doc.path);
     details.setAttr('open', '');
 
     const summary = details.createEl('summary', { cls: 'pwc-rag-file-header' });
@@ -621,28 +646,45 @@ export class ReferenceListView extends ItemView {
     return btn;
   }
 
-  /** Signature of the inputs that drive the 'all' list render. When unchanged,
-   *  a re-render is redundant and would reset scroll/collapse for no reason. */
-  private listFingerprint(): string {
-    const s = this.plugin.settings;
-    return JSON.stringify({
-      mode: this.mode,
-      searchQuery: this.searchQuery,
-      searchScope: this.searchScope,
-      isRecentOnly: this.isRecentOnly,
-      showAddSection: this.showAddSection,
-      displayedCount: this.displayedCount,
-      sortField: this.sortField,
-      sortDirection: this.sortDirection,
-      filterType: this.filterType,
-      filterSource: this.filterSource,
-      enableRagSearch: s.enableRagSearch,
-      ragSnippetLength: s.ragSnippetLength,
-      enableNativeSemantic: s.enableNativeSemantic,
-      semanticTopK: s.semanticTopK,
-      convertOutputPath: s.convertOutputPath,
-      pathToBibliography: s.pathToBibliography,
+  /** Snapshot scroll + collapse state so it can be restored after a re-render
+   *  (e.g. clicking an entry opens a note → active-leaf-change → re-render). */
+  private captureListState(): ListState {
+    const scrollEl = this.contentEl.querySelector('.pwc-view-content');
+    const knownPaths = new Set<string>();
+    const openPaths = new Set<string>();
+    this.contentEl.querySelectorAll('details.pwc-rag-file').forEach((d) => {
+      const path = (d as HTMLElement).getAttribute('data-path');
+      if (!path) return;
+      knownPaths.add(path);
+      if ((d as HTMLDetailsElement).open) openPaths.add(path);
     });
+    return {
+      scrollTop: scrollEl ? (scrollEl as HTMLElement).scrollTop : 0,
+      knownPaths,
+      openPaths,
+      query: this.searchQuery,
+    };
+  }
+
+  /** Restore collapse state, and scroll position when the query didn't change
+   *  (so revealEntry's own scrollIntoView isn't overridden). */
+  private restoreListState(state: ListState) {
+    if (!state) return;
+    this.contentEl.querySelectorAll('details.pwc-rag-file').forEach((d) => {
+      const path = (d as HTMLElement).getAttribute('data-path');
+      if (!path) return;
+      if (state.openPaths.has(path)) {
+        (d as HTMLDetailsElement).setAttribute('open', '');
+      } else if (state.knownPaths.has(path)) {
+        (d as HTMLDetailsElement).removeAttribute('open');
+      }
+    });
+    if (state.query === this.searchQuery) {
+      const scrollEl = this.contentEl.querySelector('.pwc-view-content');
+      if (scrollEl) {
+        (scrollEl as HTMLElement).scrollTop = state.scrollTop;
+      }
+    }
   }
 
   /** Sticky quick-jump nav for the 文献条目 / 正文命中 / 语义命中 groups. */
@@ -650,6 +692,7 @@ export class ReferenceListView extends ItemView {
     const nav = container.createDiv({ cls: 'pwc-rag-nav' });
     this.ragNavButtons = new Map<string, HTMLElement>();
     const groups = [
+      { key: 'top', label: t('Back to top') },
       { key: 'meta', label: t('Reference entries') },
       { key: 'fulltext', label: t('Full-text hits') },
       { key: 'semantic', label: '语义命中' },
@@ -658,7 +701,7 @@ export class ReferenceListView extends ItemView {
       const btn = nav.createEl('button', { cls: 'pwc-rag-nav-btn', text: g.label });
       btn.setAttr('data-group', g.key);
       btn.addEventListener('click', () => this.jumpToGroup(g.key));
-      this.ragNavButtons.set(g.key, btn);
+      if (g.key !== 'top') this.ragNavButtons.set(g.key, btn);
     }
   }
 
@@ -673,6 +716,13 @@ export class ReferenceListView extends ItemView {
   }
 
   private jumpToGroup(key: string) {
+    if (key === 'top') {
+      const scrollEl = this.contentEl.querySelector('.pwc-view-content');
+      if (scrollEl) {
+        (scrollEl as HTMLElement).scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      return;
+    }
     const target = this.contentEl.querySelector(`[data-rag-group="${key}"]`) as HTMLElement | null;
     if (!target) return;
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -803,27 +853,28 @@ export class ReferenceListView extends ItemView {
   async renderAllReferencesList(container?: HTMLElement) {
     debugLog('View', 'renderAllReferencesList started');
     const parent = container || this.contentEl;
-    this._lastAllFingerprint = this.listFingerprint();
-    this._lastAllBibRef = this.plugin.bibManager.bibCache;
+    const savedState = this._pendingListState;
+    this._pendingListState = null;
 
-    let listContainer = parent.querySelector('.pwc-manager-list') as HTMLElement;
-    if (!listContainer) {
-      listContainer = parent.createDiv({ cls: 'pwc-manager-list' });
-    }
-    listContainer.empty();
+    try {
+      let listContainer = parent.querySelector('.pwc-manager-list') as HTMLElement;
+      if (!listContainer) {
+        listContainer = parent.createDiv({ cls: 'pwc-manager-list' });
+      }
+      listContainer.empty();
 
-    if (this.searchQuery.trim() && this.searchScope === 'vault') {
-      this.renderGroupNav(listContainer);
-      this.renderMetaHits(listContainer, this.searchQuery);
-      await this.renderRagResults(listContainer, 'vault');
-      this.updateGroupNav();
-      return;
-    }
-    if (this.searchQuery.trim() && this.searchScope === 'library') {
-      this.renderGroupNav(listContainer);
-      await this.renderRagResults(listContainer, 'library');
-      this.updateGroupNav();
-    }
+      if (this.searchQuery.trim() && this.searchScope === 'vault') {
+        this.renderGroupNav(listContainer);
+        this.renderMetaHits(listContainer, this.searchQuery);
+        await this.renderRagResults(listContainer, 'vault');
+        this.updateGroupNav();
+        return;
+      }
+      if (this.searchQuery.trim() && this.searchScope === 'library') {
+        this.renderGroupNav(listContainer);
+        await this.renderRagResults(listContainer, 'library');
+        this.updateGroupNav();
+      }
     
     if (this.showAddSection) {
       const addSection = listContainer.createDiv({ cls: 'pwc-add-section' });
@@ -1314,6 +1365,9 @@ export class ReferenceListView extends ItemView {
         console.error('Error rendering bibliography:', e);
         bibContainer.createDiv({ text: t('Error rendering bibliography.'), cls: 'pane-empty' });
     }
+    } finally {
+      this.restoreListState(savedState);
+    }
   }
 
   async openHTMLInternal(link: string) {
@@ -1553,6 +1607,7 @@ export class ReferenceListView extends ItemView {
     this.searchQuery = entry.id.toLowerCase();
     this.displayedCount = 50;
     this.showAddSection = false;
+    this._skipStateCapture = true;
     
     await this.renderAllReferences();
     
