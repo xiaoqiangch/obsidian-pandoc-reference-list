@@ -191,4 +191,5 @@ export default {
   'RAG search is disabled': '全文检索未启用，请在设置中开启',
   'Reconvert to enable precise positioning': '重新转换可获得精确定位',
   'Reference entries': '文献条目',
+  'Search full vault (RAG)': '搜索全库（RAG）',
 };

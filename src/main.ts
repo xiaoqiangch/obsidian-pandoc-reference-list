@@ -195,7 +195,7 @@ export default class ReferenceList extends Plugin {
 
     this.addCommand({
       id: 'rag-search-vault',
-      name: 'Search full vault (RAG)',
+      name: t('Search full vault (RAG)'),
       callback: async () => {
         const view = await this.initLeaf();
         if (view) {

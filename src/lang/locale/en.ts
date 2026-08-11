@@ -205,4 +205,5 @@ export default {
   'RAG search is disabled': 'RAG search is disabled',
   'Reconvert to enable precise positioning': 'Reconvert to enable precise positioning',
   'Reference entries': 'Reference entries',
+  'Search full vault (RAG)': 'Search full vault (RAG)',
 };
