@@ -795,6 +795,20 @@ body {
     white-space: nowrap;
 }
 
+/* Semantic index status in settings */
+.pwc-semantic-progress-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.pwc-semantic-progress-path {
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-top: 4px;
+    word-break: break-all;
+}
+
 .pwc-conversion-status-completed {
     color: var(--text-success, #4caf50);
 }

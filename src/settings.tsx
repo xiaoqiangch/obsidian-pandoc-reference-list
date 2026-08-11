@@ -101,10 +101,19 @@ export interface ReferenceListSettings {
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
   plugin: ReferenceList;
+  private semanticStatusTimer: number | null = null;
 
   constructor(plugin: ReferenceList) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  hide(): void {
+    if (this.semanticStatusTimer !== null) {
+      window.clearInterval(this.semanticStatusTimer);
+      this.semanticStatusTimer = null;
+    }
+    super.hide();
   }
 
   display(): void {
@@ -717,13 +726,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           })
       );
 
-    const semanticStatus = new Setting(containerEl)
-      .setName('语义索引状态')
-      .setDesc(
-        `已索引 ${this.plugin.semanticIndexer.index.docCount} 个文件 / ${this.plugin.semanticIndexer.index.chunkCount} 个分块${
-          this.plugin.semanticIndexer.enabled ? '' : '（未启用或未配置 Key）'
-        }。`
-      );
+    const semanticStatus = new Setting(containerEl).setName('语义索引状态');
     semanticStatus.addButton((button) =>
       button.setButtonText('测试连接').onClick(async () => {
         try {
@@ -746,6 +749,42 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           this.plugin.rebuildSemanticIndex();
         })
     );
+
+    const renderSemanticStatus = () => {
+      const idx = this.plugin.semanticIndexer;
+      semanticStatus.descEl.empty();
+      if (idx.building && idx.progress) {
+        const p = idx.progress;
+        const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+        semanticStatus.descEl.createDiv({
+          cls: 'pwc-semantic-progress-text',
+          text: `正在构建语义索引：${p.done}/${p.total} 个文件（${pct}%）${
+            p.failed > 0 ? `，已跳过 ${p.failed} 个失败文件` : ''
+          }`,
+        });
+        const bar = semanticStatus.descEl.createDiv({
+          cls: 'pwc-conversion-progress-bar',
+        });
+        bar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' }).style.width = `${pct}%`;
+        if (p.path) {
+          semanticStatus.descEl.createDiv({
+            cls: 'pwc-semantic-progress-path',
+            text: p.path,
+          });
+        }
+      } else {
+        semanticStatus.descEl.createDiv({
+          text: `已索引 ${idx.index.docCount} 个文件 / ${idx.index.chunkCount} 个分块${
+            idx.enabled ? '' : '（未启用或未配置 Key）'
+          }${idx.failedCount > 0 ? `（上次构建跳过 ${idx.failedCount} 个失败文件）` : ''}。`,
+        });
+      }
+    };
+    renderSemanticStatus();
+    if (this.semanticStatusTimer !== null) {
+      window.clearInterval(this.semanticStatusTimer);
+    }
+    this.semanticStatusTimer = window.setInterval(renderSemanticStatus, 500);
 
     new Setting(containerEl)
       .setName('重建索引')

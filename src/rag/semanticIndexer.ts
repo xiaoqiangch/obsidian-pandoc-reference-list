@@ -27,6 +27,8 @@ export interface IndexProgress {
   done: number;
   total: number;
   path: string;
+  /** Number of files skipped because embedding / reading failed. */
+  failed: number;
 }
 
 /**
@@ -38,6 +40,12 @@ export interface IndexProgress {
  */
 export class SemanticIndexer {
   index = new SemanticVectorIndex();
+  /** True while a build / incremental update is running. */
+  building = false;
+  /** Latest progress of the running build (null when idle). */
+  progress: IndexProgress | null = null;
+  /** Files skipped in the current build because reading / embedding failed. */
+  failedCount = 0;
   private app: App;
   private vaultRoot: string;
   private outputPath: string;
@@ -123,28 +131,42 @@ export class SemanticIndexer {
   async buildAll(onProgress?: (p: IndexProgress) => void): Promise<void> {
     if (this.busy) return;
     this.busy = true;
+    this.building = true;
+    this.progress = null;
     try {
       const files = this.app.vault
         .getMarkdownFiles()
         .filter((f) => shouldIndexPath(f.path));
       this.index = new SemanticVectorIndex();
       this.index.model = this.settings.model;
+      this.failedCount = 0;
 
       for (let i = 0; i < files.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         try {
           await this.indexFile(files[i]);
         } catch (e: any) {
-          debugLog('SemanticIndexer', 'indexFile failed, aborting build', { path: files[i].path, error: e.message });
-          throw e;
+          this.failedCount++;
+          debugLog('SemanticIndexer', 'indexFile failed, skipping', {
+            path: files[i].path,
+            error: e.message,
+          });
         }
-        onProgress?.({ done: i + 1, total: files.length, path: files[i].path });
+        this.progress = {
+          done: i + 1,
+          total: files.length,
+          path: files[i].path,
+          failed: this.failedCount,
+        };
+        onProgress?.(this.progress);
       }
 
       this.scheduleSave();
       debugLog('SemanticIndexer', 'Full build finished', { files: files.length });
     } finally {
       this.busy = false;
+      this.building = false;
+      this.progress = null;
     }
   }
 
@@ -152,6 +174,8 @@ export class SemanticIndexer {
   async incrementalUpdate(onProgress?: (p: IndexProgress) => void): Promise<void> {
     if (this.busy || !this.enabled) return;
     this.busy = true;
+    this.building = true;
+    this.progress = null;
     try {
       const files = this.app.vault
         .getMarkdownFiles()
@@ -174,18 +198,26 @@ export class SemanticIndexer {
         }
       }
 
+      this.failedCount = 0;
       for (let i = 0; i < changed.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         try {
           await this.indexFile(changed[i]);
         } catch (e: any) {
+          this.failedCount++;
           debugLog('SemanticIndexer', 'indexFile failed during incremental update', {
             path: changed[i].path,
             error: e.message,
           });
-          break;
+          continue;
         }
-        onProgress?.({ done: i + 1, total: changed.length, path: changed[i].path });
+        this.progress = {
+          done: i + 1,
+          total: changed.length,
+          path: changed[i].path,
+          failed: this.failedCount,
+        };
+        onProgress?.(this.progress);
       }
 
       if (changed.length > 0 || current.size !== this.index.docCount) {
@@ -194,12 +226,16 @@ export class SemanticIndexer {
       debugLog('SemanticIndexer', 'Incremental update finished', { changed: changed.length });
     } finally {
       this.busy = false;
+      this.building = false;
+      this.progress = null;
     }
   }
 
   private async indexFile(f: TFile): Promise<void> {
-    const abs = path.join(this.vaultRoot, f.path);
-    const content = fs.readFileSync(abs, 'utf-8');
+    // Use Obsidian's native read so iCloud on-demand files are handled
+    // correctly (direct fs.readFileSync fails with ENOENT for files whose
+    // content has not been downloaded to the local filesystem yet).
+    const content = await this.app.vault.cachedRead(f);
     const chunks = chunkByLines(content, this.settings.chunkSize, this.settings.chunkOverlap).filter(
       (c) => c.text.trim().length > 0
     );
