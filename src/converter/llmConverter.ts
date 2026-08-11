@@ -1,5 +1,25 @@
 import { requestUrl } from 'obsidian';
+import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import { debugLog } from '../helpers';
+
+// Obsidian's requestUrl has no enforced timeout; a slow or hung model endpoint
+// can stall the whole conversion for many minutes with zero progress feedback.
+// Cap every LLM call so a hang degrades to the local BibTeX fallback instead
+// of appearing to freeze Obsidian.
+const LLM_REQUEST_TIMEOUT_MS = 120000;
+
+function requestUrlWithTimeout(opts: RequestUrlParam): Promise<RequestUrlResponse> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms`)),
+      LLM_REQUEST_TIMEOUT_MS
+    );
+  });
+  return Promise.race([requestUrl(opts), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 export interface LlmConvertSettings {
   apiUrl: string;
@@ -61,7 +81,7 @@ Rules:
     max_tokens: 4096,
   };
 
-  const response = await requestUrl({
+  const response = await requestUrlWithTimeout({
     url: `${normalizedUrl}/chat/completions`,
     method: 'POST',
     headers: {
@@ -121,7 +141,7 @@ Rules:
     max_tokens: 8192,
   };
 
-  const response = await requestUrl({
+  const response = await requestUrlWithTimeout({
     url: `${normalizedUrl}/chat/completions`,
     method: 'POST',
     headers: {
@@ -233,7 +253,7 @@ Rules:
   };
 
   try {
-    const response = await requestUrl({
+    const response = await requestUrlWithTimeout({
       url: `${normalizedUrl}/chat/completions`,
       method: 'POST',
       headers: {
@@ -369,7 +389,7 @@ Rules:
     };
 
     try {
-      const response = await requestUrl({
+      const response = await requestUrlWithTimeout({
         url: `${normalizedUrl}/chat/completions`,
         method: 'POST',
         headers: {

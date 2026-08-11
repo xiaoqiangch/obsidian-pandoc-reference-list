@@ -96,12 +96,20 @@ export async function convertToMarkdown(
     totalPages = chapters.length;
   }
 
-  if (existingState && existingState.status === 'in_progress') {
+  // Resume only when a previous run was genuinely in progress with the same
+  // attachment and output paths. A 'failed' (or stale) state must be reset to
+  // 'in_progress' so a re-run shows accurate progress instead of reusing the
+  // previous failure status.
+  const isResume = !!(existingState && existingState.status === 'in_progress');
+
+  if (isResume) {
     startPage = existingState.convertedPages + 1;
     debugLog('Converter', 'Resuming from page', { citekey, startPage });
+  } else if (existingState && existingState.status === 'failed') {
+    debugLog('Converter', 'Restarting after previous failure', { citekey });
   }
 
-  const state: ConversionState = existingState || {
+  const state: ConversionState = {
     citekey,
     attachmentPath,
     attachmentType,
@@ -109,12 +117,11 @@ export async function convertToMarkdown(
     bibPath,
     imagesDir,
     totalPages,
-    convertedPages: 0,
+    convertedPages: isResume ? existingState.convertedPages : 0,
     status: 'in_progress',
-    startedAt: new Date().toISOString(),
+    startedAt: isResume ? existingState.startedAt : new Date().toISOString(),
   };
 
-  state.totalPages = totalPages;
   stateManager.set(citekey, state);
 
   onProgress?.({
