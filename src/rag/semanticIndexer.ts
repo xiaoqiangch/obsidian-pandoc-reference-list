@@ -1,5 +1,5 @@
 import { App, TFile } from 'obsidian';
-import { debugLog } from '../helpers';
+import { debugLog, getCacheRoot } from '../helpers';
 import { SemanticVectorIndex, SemanticVectorHit } from './vectorIndex';
 import { chunkByLines } from './chunker';
 import { embedTexts, EmbeddingSettings } from './embedding';
@@ -35,7 +35,7 @@ export interface IndexProgress {
  * Builds and maintains a semantic (embedding) index over vault markdown files.
  * - Incremental: only changed / added / removed files are re-embedded.
  * - Persisted: JSON metadata + raw binary vector payload under
- *   .bib-manager-temp/semantic-index.json and semantic-vectors.bin.
+ *   a vault-external cache dir (semantic-index.json / semantic-vectors.bin).
  * - Background: processing yields to idle callbacks; embedding is batched.
  */
 export class SemanticIndexer {
@@ -47,7 +47,6 @@ export class SemanticIndexer {
   /** Files skipped in the current build because reading / embedding failed. */
   failedCount = 0;
   private app: App;
-  private vaultRoot: string;
   private outputPath: string;
   private cacheJsonPath: string;
   private cacheBinPath: string;
@@ -57,13 +56,12 @@ export class SemanticIndexer {
   private saveTimer: any = null;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
 
-  constructor(app: App, vaultRoot: string, outputPath: string, settings: SemanticIndexerSettings) {
+  constructor(app: App, outputPath: string, settings: SemanticIndexerSettings) {
     this.app = app;
-    this.vaultRoot = vaultRoot;
     this.outputPath = outputPath;
     this.settings = settings;
-    this.cacheJsonPath = path.join(vaultRoot, '.bib-manager-temp', 'semantic-index.json');
-    this.cacheBinPath = path.join(vaultRoot, '.bib-manager-temp', 'semantic-vectors.bin');
+    this.cacheJsonPath = path.join(getCacheRoot(), 'semantic-index.json');
+    this.cacheBinPath = path.join(getCacheRoot(), 'semantic-vectors.bin');
   }
 
   get enabled(): boolean {

@@ -1,9 +1,8 @@
-import { getVaultRoot, debugLog } from '../helpers';
+import { getCacheRoot, debugLog } from '../helpers';
 
 const path = require('path');
 const fs = require('fs');
 
-const STATE_DIR = '.bib-manager-temp';
 const STATE_FILE = 'conversion-state.json';
 
 export interface ConversionState {
@@ -30,7 +29,7 @@ export class ConversionStateManager {
   private stateFilePath: string;
 
   constructor() {
-    this.stateFilePath = path.join(getVaultRoot(), STATE_DIR, STATE_FILE);
+    this.stateFilePath = path.join(getCacheRoot(), STATE_FILE);
     this.load();
   }
 

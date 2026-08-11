@@ -81,12 +81,10 @@ export default class ReferenceList extends Plugin {
     this.bibManager = new BibManager(this);
     this.ragIndexer = new RagIndexer(
       this.app,
-      getVaultRoot(),
       this.settings.convertOutputPath || 'literature'
     );
     this.semanticIndexer = new SemanticIndexer(
       this.app,
-      getVaultRoot(),
       this.settings.convertOutputPath || 'literature',
       {
         enabled: !!this.settings.enableNativeSemantic,

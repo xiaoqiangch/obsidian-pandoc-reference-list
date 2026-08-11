@@ -2,9 +2,25 @@ import { FileSystemAdapter, htmlToMarkdown } from 'obsidian';
 import { shellPath } from 'shell-path';
 import { PartialCSLEntry } from './bib/types';
 
+const os = require('os');
+const path = require('path');
+const { createHash } = require('crypto');
+
 export function getVaultRoot() {
   // This is a desktop only plugin, so assume adapter is FileSystemAdapter
   return (app.vault.adapter as FileSystemAdapter).getBasePath();
+}
+
+/**
+ * Vault-external cache root (~/.bib-manager-index/<vaultHash>). Indexes and
+ * conversion state live here instead of inside the vault so iCloud sync can
+ * never evict, truncate, or race them (which previously caused repeated
+ * full rebuilds on every restart).
+ */
+export function getCacheRoot(): string {
+  const vaultRoot = getVaultRoot();
+  const hash = createHash('md5').update(vaultRoot).digest('hex').slice(0, 12);
+  return path.join(os.homedir(), '.bib-manager-index', hash);
 }
 
 export function copyElToClipboard(el: HTMLElement) {

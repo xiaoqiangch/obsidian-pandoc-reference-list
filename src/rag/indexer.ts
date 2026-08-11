@@ -1,5 +1,5 @@
 import { App, TFile } from 'obsidian';
-import { debugLog } from '../helpers';
+import { debugLog, getCacheRoot, getVaultRoot } from '../helpers';
 import { Bm25Index, RagDocMeta } from './bm25';
 
 const fs = require('fs');
@@ -35,23 +35,21 @@ interface CacheFileMeta {
  * Builds and maintains a whole-vault BM25 index over markdown files.
  * - Incremental: only changed / added / removed files are re-indexed.
  * - Background: processing is chunked and yields to idle callbacks.
- * - Persisted: the index is serialized to .bib-manager-temp/rag-index.json.
+ * - Persisted: the index is serialized to a vault-external cache dir.
  */
 export class RagIndexer {
   index = new Bm25Index();
   private app: App;
-  private vaultRoot: string;
   private outputPath: string;
   private cachePath: string;
   private busy = false;
   private cacheDirty = false;
   private saveTimer: any = null;
 
-  constructor(app: App, vaultRoot: string, outputPath: string) {
+  constructor(app: App, outputPath: string) {
     this.app = app;
-    this.vaultRoot = vaultRoot;
     this.outputPath = outputPath;
-    this.cachePath = path.join(vaultRoot, '.bib-manager-temp', 'rag-index.json');
+    this.cachePath = path.join(getCacheRoot(), 'rag-index.json');
   }
 
   isLiteraturePath(relPath: string): boolean {
@@ -175,7 +173,7 @@ export class RagIndexer {
 
   private indexFile(f: TFile): void {
     try {
-      const abs = path.join(this.vaultRoot, f.path);
+      const abs = path.join(getVaultRoot(), f.path);
       const content = fs.readFileSync(abs, 'utf-8');
       const literature = this.isLiteraturePath(f.path);
       const extra: Partial<RagDocMeta> = {
