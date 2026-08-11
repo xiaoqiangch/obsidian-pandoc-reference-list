@@ -6,7 +6,8 @@ import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
-import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, LayoutHit } from './rag/retrieval';
+import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, LayoutHit, RagPosition } from './rag/retrieval';
+import { LayoutBlock } from './rag/layout';
 import { semanticSearch, SemanticHit } from './rag/semantic';
 
 const fs = require('fs');
@@ -423,6 +424,12 @@ export class ReferenceListView extends ItemView {
     const outputPath = this.plugin.settings.convertOutputPath || 'literature';
     const snippetLen = this.plugin.settings.ragSnippetLength || 180;
 
+    interface DocHits {
+      doc: any;
+      layout: LayoutBlock[] | null;
+      positions: RagPosition[];
+    }
+    const results: DocHits[] = [];
     for (const hit of relevant.slice(0, 30)) {
       const doc = hit.doc;
       let content = '';
@@ -438,20 +445,54 @@ export class ReferenceListView extends ItemView {
           : null;
       const positions = findRagPositions(content, hit.terms, layout, snippetLen);
       if (positions.length === 0) continue;
+      results.push({ doc, layout, positions });
+    }
 
-      const card = group.createDiv({ cls: 'pwc-rag-card' });
-      card.createEl('div', { cls: 'pwc-rag-card-title', text: doc.title || doc.path });
-      card.createEl('div', {
-        cls: 'pwc-rag-card-path',
-        text: `${doc.path} · 命中 ${positions.length} 处`,
+    if (results.length === 0) {
+      group.createDiv({ cls: 'pane-empty', text: scope === 'vault' ? t('No results found in vault.') : t('No full-text hits') });
+      return;
+    }
+
+    const totalHits = results.reduce((n, r) => n + r.positions.length, 0);
+    group.createDiv({
+      cls: 'pwc-rag-group-title',
+      text: `${scope === 'library' ? t('Full-text hits') : '全文命中'} · 共 ${totalHits} 处（${results.length} 篇）`,
+    });
+
+    const resultContainer = group.createDiv({ cls: 'search-result-container' });
+
+    for (const { doc, layout, positions } of results) {
+      const item = resultContainer.createDiv({ cls: 'tree-item' });
+
+      const header = item.createDiv({ cls: 'tree-item-self search-result-file-title is-clickable' });
+      header.setAttr('data-path', doc.path);
+
+      const collapse = header.createDiv({ cls: 'tree-item-icon collapse-icon' });
+      setIcon(collapse, 'chevron-down');
+
+      header.createDiv({ cls: 'tree-item-inner', text: doc.title || doc.path });
+
+      const flair = header.createDiv({ cls: 'tree-item-flair', text: String(positions.length) });
+      flair.setAttr('aria-label', `${positions.length} 处命中`);
+
+      const children = item.createDiv({ cls: 'tree-item-children' });
+
+      const setCollapsed = (collapsed: boolean) => {
+        item.toggleClass('is-collapsed', collapsed);
+        header.toggleClass('is-collapsed', collapsed);
+        collapse.toggleClass('is-collapsed', collapsed);
+      };
+      header.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        setCollapsed(!item.hasClass('is-collapsed'));
       });
 
       for (const pos of positions) {
-        const row = card.createDiv({ cls: 'pwc-rag-hit' });
-        const snipEl = row.createDiv({ cls: 'pwc-rag-snippet' });
-        this.appendHighlighted(snipEl, pos.snippet, hit.terms);
+        const match = children.createDiv({ cls: 'search-result-file-match' });
+        const textEl = match.createDiv({ cls: 'search-result-file-match-text' });
+        this.appendHighlighted(textEl, pos.snippet, hit.terms);
 
-        const actions = row.createDiv({ cls: 'pwc-rag-card-actions' });
+        const actions = match.createDiv({ cls: 'pwc-rag-card-actions' });
         this.addIconAction(actions, 'file-text', `在 MD 中定位 第${pos.line}行`, () => {
           this.openNoteAtLine(doc.path, pos.line);
         });
@@ -463,7 +504,7 @@ export class ReferenceListView extends ItemView {
       }
 
       if (doc.literature && doc.citekey && layout === null) {
-        card.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
+        children.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
       }
     }
 
@@ -564,7 +605,7 @@ export class ReferenceListView extends ItemView {
       if (!term) continue;
       const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(`(${escaped})`, 'gi');
-      safe = safe.replace(re, '<mark>$1</mark>');
+      safe = safe.replace(re, '<span class="search-result-file-matched-text">$1</span>');
     }
     el.innerHTML = safe;
   }

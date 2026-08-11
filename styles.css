@@ -890,20 +890,6 @@ body {
     padding: 0 1px;
 }
 
-.pwc-rag-hit {
-    padding: 6px 0;
-    border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.pwc-rag-hit:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
-}
-
-.pwc-rag-hit .pwc-rag-snippet {
-    margin-bottom: 4px;
-}
-
 .pwc-rag-card-actions {
     display: flex;
     align-items: center;
@@ -925,4 +911,70 @@ body {
 .pwc-rag-hint {
     font-size: 11px;
     color: var(--text-muted);
+}
+
+/* RAG 全文命中：复用 Obsidian 原生搜索结果样式（文件分组可折叠、每条命中圆角边框、数量角标） */
+.pwc-rag-group .search-result-container {
+    margin-top: 4px;
+}
+
+.pwc-rag-group .search-result-file-title {
+    cursor: pointer;
+}
+
+.pwc-rag-group .search-result-file-title:hover {
+    background: var(--background-modifier-hover);
+}
+
+.pwc-rag-group .tree-item-children {
+    padding-left: 14px;
+}
+
+.pwc-rag-group .tree-item.is-collapsed > .tree-item-children,
+.pwc-rag-group .tree-item-self.is-collapsed > .tree-item-children {
+    display: none;
+}
+
+.pwc-rag-group .collapse-icon {
+    flex: 0 0 auto;
+}
+
+.pwc-rag-group .collapse-icon svg {
+    transition: transform 100ms ease-in-out;
+}
+
+.pwc-rag-group .tree-item.is-collapsed > .tree-item-self .collapse-icon svg,
+.pwc-rag-group .tree-item-self.is-collapsed .collapse-icon svg {
+    transform: rotate(-90deg);
+}
+
+.pwc-rag-group .search-result-file-match {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    background: var(--background-primary);
+    padding: 6px 8px;
+    margin: 4px 0;
+}
+
+.pwc-rag-group .search-result-file-match:hover {
+    background: var(--background-secondary);
+}
+
+.pwc-rag-group .search-result-file-match-text {
+    font-size: var(--font-ui-small);
+    color: var(--text-normal);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.pwc-rag-group .search-result-file-matched-text {
+    background: var(--text-highlight-bg, rgba(255, 211, 0, 0.4));
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.pwc-rag-group .pwc-rag-card-actions {
+    margin-top: 4px;
 }
