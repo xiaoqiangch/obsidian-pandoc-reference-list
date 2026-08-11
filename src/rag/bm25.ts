@@ -206,10 +206,28 @@ export class Bm25Index {
   }
 }
 
+/**
+ * Extract a display title from a markdown document. Skips leading blank
+ * lines, a YAML frontmatter block (--- ... ---), and thematic-break lines so
+ * files that begin with frontmatter or a horizontal rule do not end up
+ * titled "---". Returns '' when no meaningful line exists (the caller falls
+ * back to the file path).
+ */
 export function extractTitle(content: string): string {
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
+  const lines = content.split('\n');
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i++;
+
+  if (i < lines.length && /^-{3,}\s*$/.test(lines[i].trim())) {
+    let j = i + 1;
+    while (j < lines.length && !/^-{3,}\s*$/.test(lines[j].trim())) j++;
+    if (j < lines.length) i = j + 1;
+  }
+
+  for (; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
     if (!trimmed) continue;
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) continue;
     return trimmed.replace(/^#+\s*/, '').slice(0, 200);
   }
   return '';

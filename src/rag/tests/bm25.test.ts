@@ -1,4 +1,4 @@
-import { Bm25Index } from '../bm25';
+import { Bm25Index, extractTitle } from '../bm25';
 
 describe('Bm25Index', () => {
   test('indexes and retrieves documents', () => {
@@ -58,5 +58,30 @@ describe('Bm25Index', () => {
     expect(idx.docCount).toBe(1);
     expect(idx.search('digital', 10).length).toBe(0);
     expect(idx.search('climate', 10).length).toBe(1);
+  });
+});
+
+describe('extractTitle', () => {
+  test('returns the first heading', () => {
+    expect(extractTitle('# Hello World\n\nBody text')).toBe('Hello World');
+  });
+
+  test('skips a YAML frontmatter block', () => {
+    const md = '---\ntitle: "Foo"\ntags: [a, b]\n---\n# Real Title\n\nBody';
+    expect(extractTitle(md)).toBe('Real Title');
+  });
+
+  test('does not return the frontmatter delimiter as title', () => {
+    const md = '---\ntitle: Foo\n---\nFirst line of body';
+    expect(extractTitle(md)).not.toBe('---');
+  });
+
+  test('skips a leading thematic break with no closing delimiter', () => {
+    expect(extractTitle('---\n\nBody text')).toBe('Body text');
+  });
+
+  test('returns empty string for blank content', () => {
+    expect(extractTitle('')).toBe('');
+    expect(extractTitle('\n\n  \n')).toBe('');
   });
 });

@@ -423,10 +423,11 @@ export class ReferenceListView extends ItemView {
       const doc = hit.doc;
       let content = '';
       try {
-        content = fs.readFileSync(path.join(vaultRoot, doc.path), 'utf-8');
+        content = await this.readVaultText(doc.path);
       } catch {
         continue;
       }
+      if (!content) continue;
 
       const layout =
         doc.literature && doc.citekey
@@ -550,13 +551,14 @@ export class ReferenceListView extends ItemView {
       byDoc.set(h.path, list);
     }
 
-    for (const [path, hits] of byDoc) {
+    for (const [docPath, hits] of byDoc) {
       let content = '';
       try {
-        content = fs.readFileSync(path.join(vaultRoot, path), 'utf-8');
+        content = await this.readVaultText(docPath);
       } catch {
         continue;
       }
+      if (!content) continue;
       const lines = content.split('\n');
       const first = hits[0];
       const layout = first.citekey
@@ -587,8 +589,8 @@ export class ReferenceListView extends ItemView {
         .filter((e) => e.snippet && e.snippet !== '...');
 
       this.renderRagDocGroup(resultContainer, {
-        title: first.title || path,
-        path,
+        title: first.title || docPath,
+        path: docPath,
         citekey: first.citekey,
         layout,
         hint: first.literature,
@@ -660,6 +662,14 @@ export class ReferenceListView extends ItemView {
     leaf.openFile(file, { eState: { line: Math.max(0, line - 1) } }).then(() => {
       this.plugin.app.workspace.revealLeaf(leaf);
     });
+  }
+
+  /** Read a vault file via Obsidian's native API so iCloud on-demand files
+   *  (not yet downloaded locally) resolve instead of throwing ENOENT. */
+  private async readVaultText(relPath: string): Promise<string> {
+    const file = this.plugin.app.vault.getAbstractFileByPath(relPath);
+    if (!(file instanceof TFile)) return '';
+    return await this.plugin.app.vault.cachedRead(file);
   }
 
   locateLiteraturePdf(citekey: string, layoutHit: { page: number; bbox: number[] | null }) {
