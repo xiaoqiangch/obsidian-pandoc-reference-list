@@ -33,6 +33,7 @@ import { BibManager } from './bib/bibManager';
 import { CiteSuggest } from './citeSuggest/citeSuggest';
 import { isZoteroRunning } from './bib/helpers';
 import { RagIndexer } from './rag/indexer';
+import { SemanticIndexer, IndexProgress } from './rag/semanticIndexer';
 import { backfillLiteratureLayouts } from './rag/backfill';
 import * as fs from 'fs';
 
@@ -43,6 +44,7 @@ export default class ReferenceList extends Plugin {
   cacheDir: string;
   bibManager: BibManager;
   ragIndexer: RagIndexer;
+  semanticIndexer: SemanticIndexer;
   _initPromise: PromiseCapability<void>;
   lastActiveFile: TFile | null = null;
   private lastMatchQuery: string = '';
@@ -81,6 +83,20 @@ export default class ReferenceList extends Plugin {
       this.app,
       getVaultRoot(),
       this.settings.convertOutputPath || 'literature'
+    );
+    this.semanticIndexer = new SemanticIndexer(
+      this.app,
+      getVaultRoot(),
+      this.settings.convertOutputPath || 'literature',
+      {
+        enabled: !!this.settings.enableNativeSemantic,
+        apiUrl: this.settings.semanticEmbedApiUrl,
+        apiKey: this.settings.semanticEmbedApiKey || '',
+        model: this.settings.semanticEmbedModel,
+        chunkSize: this.settings.semanticChunkSize || 1200,
+        chunkOverlap: this.settings.semanticChunkOverlap || 120,
+        topK: this.settings.semanticTopK || 20,
+      }
     );
     this.initPromise.promise
       .then(() => {
@@ -143,11 +159,15 @@ export default class ReferenceList extends Plugin {
 
     // RAG full-text index: build in the background, keep it incrementally updated.
     this.initRagIndex();
+    this.initSemanticIndex();
 
     const ragUpdate = debounce(
       () => {
         if (this.settings.enableRagSearch) {
           this.ragIndexer.incrementalUpdate().catch(() => {});
+        }
+        if (this.semanticIndexer.enabled) {
+          this.semanticIndexer.incrementalUpdate().catch(() => {});
         }
       },
       5000,
@@ -209,6 +229,14 @@ export default class ReferenceList extends Plugin {
             if (input) input.focus();
           }, 300);
         }
+      },
+    });
+
+    this.addCommand({
+      id: 'rebuild-semantic-index',
+      name: '重建语义索引',
+      callback: () => {
+        this.rebuildSemanticIndex();
       },
     });
 
@@ -398,6 +426,7 @@ export default class ReferenceList extends Plugin {
       .forEach((leaf) => leaf.detach());
     this.bibManager.destroy();
     this.ragIndexer.destroy();
+    this.semanticIndexer.destroy();
   }
 
   async initRagIndex(): Promise<void> {
@@ -424,6 +453,57 @@ export default class ReferenceList extends Plugin {
       }, 3000);
     } catch (e) {
       debugLog('Main', 'RAG index initialization failed', e);
+    }
+  }
+
+  private lastSemanticMilestone = 0;
+  reportSemanticProgress(p: IndexProgress): void {
+    const pct = Math.floor((p.done / p.total) * 100);
+    const milestone = Math.floor(pct / 10) * 10;
+    if (pct === 100 || milestone > this.lastSemanticMilestone) {
+      this.lastSemanticMilestone = milestone;
+      new Notice(`语义索引 ${p.done}/${p.total}（${pct}%）`);
+    }
+  }
+
+  async initSemanticIndex(): Promise<void> {
+    if (!this.semanticIndexer.enabled) return;
+    if (!this.settings.semanticEmbedApiKey) {
+      new Notice('语义检索：请先在设置中配置火山方舟 Embedding API Key。');
+      return;
+    }
+    try {
+      const loaded = await this.semanticIndexer.loadCache();
+      if (loaded) {
+        await this.semanticIndexer.incrementalUpdate();
+      } else {
+        this.lastSemanticMilestone = 0;
+        new Notice('正在构建语义索引（首次全库嵌入，后台进行，约需数分钟）...');
+        await this.semanticIndexer.buildAll((p) => this.reportSemanticProgress(p));
+        new Notice('语义索引构建完成');
+      }
+      debugLog('Main', 'Semantic index ready', {
+        docs: this.semanticIndexer.index.docCount,
+        chunks: this.semanticIndexer.index.chunkCount,
+      });
+    } catch (e: any) {
+      debugLog('Main', 'Semantic index initialization failed', { error: e.message });
+      new Notice(`语义索引构建失败：${e.message}`);
+    }
+  }
+
+  async rebuildSemanticIndex(): Promise<void> {
+    if (!this.semanticIndexer.enabled) {
+      new Notice('语义检索未启用，请在设置中开启并配置 API Key。');
+      return;
+    }
+    this.lastSemanticMilestone = 0;
+    new Notice('开始重建语义索引...');
+    try {
+      await this.semanticIndexer.buildAll((p) => this.reportSemanticProgress(p));
+      new Notice('语义索引重建完成');
+    } catch (e: any) {
+      new Notice(`语义索引重建失败：${e.message}`);
     }
   }
 

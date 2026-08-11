@@ -206,7 +206,7 @@ export class Bm25Index {
   }
 }
 
-function extractTitle(content: string): string {
+export function extractTitle(content: string): string {
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;

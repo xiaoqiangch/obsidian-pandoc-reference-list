@@ -9,6 +9,17 @@ const EXCLUDE_DIR_RE = /(^|\/)(\.trash|\.obsidian|\.git|\.openclaw|_bib-links)(\
 const CACHE_VERSION = 1;
 const IDLE_BATCH = 40;
 
+export function shouldIndexPath(relPath: string): boolean {
+  if (!relPath.toLowerCase().endsWith('.md')) return false;
+  if (EXCLUDE_DIR_RE.test(relPath)) return false;
+  if (relPath.startsWith('.') || relPath.indexOf('/.') >= 0) return false;
+  return true;
+}
+
+export function isLiteraturePath(outputPath: string, relPath: string): boolean {
+  return relPath.startsWith(outputPath + '/') && relPath.endsWith('.md');
+}
+
 export interface IndexProgress {
   done: number;
   total: number;
@@ -44,14 +55,11 @@ export class RagIndexer {
   }
 
   isLiteraturePath(relPath: string): boolean {
-    return relPath.startsWith(this.outputPath + '/') && relPath.endsWith('.md');
+    return isLiteraturePath(this.outputPath, relPath);
   }
 
   shouldIndex(relPath: string): boolean {
-    if (!relPath.toLowerCase().endsWith('.md')) return false;
-    if (EXCLUDE_DIR_RE.test(relPath)) return false;
-    if (relPath.startsWith('.') || relPath.indexOf('/.') >= 0) return false;
-    return true;
+    return shouldIndexPath(relPath);
   }
 
   async loadCache(): Promise<boolean> {

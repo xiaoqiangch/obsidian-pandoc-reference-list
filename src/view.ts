@@ -6,9 +6,9 @@ import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
-import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, LayoutHit, RagPosition } from './rag/retrieval';
+import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, RagPosition } from './rag/retrieval';
 import { LayoutBlock } from './rag/layout';
-import { semanticSearch, SemanticHit } from './rag/semantic';
+import { SemanticVectorHit } from './rag/vectorIndex';
 
 const fs = require('fs');
 const path = require('path');
@@ -17,18 +17,6 @@ export const viewType = 'ReferenceListView';
 
 type SortField = 'year' | 'title' | 'author' | 'addDate' | 'id';
 type SortDirection = 'asc' | 'desc';
-
-/** Keep only the first layout hit per page so locate buttons stay uncluttered. */
-function dedupeByPage(hits: LayoutHit[]): LayoutHit[] {
-  const seen = new Set<number>();
-  const out: LayoutHit[] = [];
-  for (const h of hits) {
-    if (seen.has(h.page)) continue;
-    seen.add(h.page);
-    out.push(h);
-  }
-  return out;
-}
 
 /** Match an entry against the query across bibliographic metadata fields. */
 function matchesMeta(entry: PartialCSLEntry, q: string): boolean {
@@ -463,86 +451,148 @@ export class ReferenceListView extends ItemView {
     const resultContainer = group.createDiv({ cls: 'pwc-rag-files' });
 
     for (const { doc, layout, positions, terms } of results) {
-      // Native <details>/<summary> collapse: works independently of Obsidian's
-      // own tree-item classes / runtime, so expansion is guaranteed.
-      const details = resultContainer.createEl('details', { cls: 'pwc-rag-file' });
-      details.setAttr('open', '');
-
-      const summary = details.createEl('summary', { cls: 'pwc-rag-file-header' });
-      const icon = summary.createDiv({ cls: 'pwc-rag-file-icon' });
-      setIcon(icon, 'chevron-down');
-      summary.createDiv({ cls: 'pwc-rag-file-name', text: doc.title || doc.path });
-      const count = summary.createDiv({ cls: 'pwc-rag-file-count', text: String(positions.length) });
-      count.setAttr('aria-label', `${positions.length} 处命中`);
-
-      const matches = details.createDiv({ cls: 'pwc-rag-file-matches' });
-
-      for (const pos of positions) {
-        const match = matches.createDiv({ cls: 'pwc-rag-match' });
-        const textEl = match.createDiv({ cls: 'pwc-rag-match-text' });
-        this.appendHighlighted(textEl, pos.snippet, terms);
-
-        const actions = match.createDiv({ cls: 'pwc-rag-card-actions' });
-        this.addIconAction(actions, 'file-text', `在 MD 中定位 第${pos.line}行`, () => {
-          this.openNoteAtLine(doc.path, pos.line);
-        });
-        if (doc.literature && doc.citekey && pos.page) {
-          this.addIconAction(actions, 'crosshair', `在 PDF 中定位 第${pos.page}页`, () => {
-            this.locateLiteraturePdf(doc.citekey!, { page: pos.page, bbox: pos.bbox ?? null });
-          });
-        }
-      }
-
-      if (doc.literature && doc.citekey && layout === null) {
-        matches.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
-      }
+      const entries = positions.map((p) => ({
+        line: p.line,
+        snippet: p.snippet,
+        page: p.page,
+        bbox: p.bbox,
+      }));
+      this.renderRagDocGroup(resultContainer, {
+        title: doc.title || doc.path,
+        path: doc.path,
+        citekey: doc.literature ? doc.citekey : undefined,
+        layout,
+        hint: doc.literature,
+      }, entries, terms);
     }
 
-    if (this.plugin.settings.enableSemanticReuse) {
-      const semanticHits = await semanticSearch(
-        this.plugin.app,
-        query,
-        scope === 'vault' ? undefined : this.plugin.settings.convertOutputPath || 'literature'
-      );
-      if (semanticHits.length > 0) {
-        this.renderSemanticResults(container, semanticHits);
-      }
+    if (this.plugin.settings.enableNativeSemantic) {
+      await this.renderNativeSemanticResults(container, query, scope);
     }
   }
 
-  renderSemanticResults(container: HTMLElement, hits: SemanticHit[]) {
-    const group = container.createDiv({ cls: 'pwc-rag-group' });
-    group.createDiv({ cls: 'pwc-rag-group-title', text: '语义命中' });
+  /**
+   * Render one collapsible document group (native <details>/<summary>) with a
+   * match entry per hit: snippet + "locate in MD" + optional "locate in PDF".
+   */
+  renderRagDocGroup(
+    parent: HTMLElement,
+    doc: { title: string; path: string; citekey?: string; layout: LayoutBlock[] | null; hint?: boolean },
+    entries: { line: number; snippet: string; page?: number; bbox?: number[] | null }[],
+    terms: string[]
+  ) {
+    const details = parent.createEl('details', { cls: 'pwc-rag-file' });
+    details.setAttr('open', '');
+
+    const summary = details.createEl('summary', { cls: 'pwc-rag-file-header' });
+    const icon = summary.createDiv({ cls: 'pwc-rag-file-icon' });
+    setIcon(icon, 'chevron-down');
+    summary.createDiv({ cls: 'pwc-rag-file-name', text: doc.title });
+    const count = summary.createDiv({ cls: 'pwc-rag-file-count', text: String(entries.length) });
+    count.setAttr('aria-label', `${entries.length} 处命中`);
+
+    const matches = details.createDiv({ cls: 'pwc-rag-file-matches' });
+
+    for (const entry of entries) {
+      const match = matches.createDiv({ cls: 'pwc-rag-match' });
+      const textEl = match.createDiv({ cls: 'pwc-rag-match-text' });
+      this.appendHighlighted(textEl, entry.snippet, terms);
+
+      const actions = match.createDiv({ cls: 'pwc-rag-card-actions' });
+      this.addIconAction(actions, 'file-text', `在 MD 中定位 第${entry.line}行`, () => {
+        this.openNoteAtLine(doc.path, entry.line);
+      });
+      if (doc.citekey && entry.page) {
+        this.addIconAction(actions, 'crosshair', `在 PDF 中定位 第${entry.page}页`, () => {
+          this.locateLiteraturePdf(doc.citekey!, { page: entry.page!, bbox: entry.bbox ?? null });
+        });
+      }
+    }
+
+    if (doc.hint && doc.citekey && doc.layout === null) {
+      matches.createDiv({ cls: 'pwc-rag-hint', text: t('Reconvert to enable precise positioning') });
+    }
+  }
+
+  /** Render the native vector-search "语义命中" group. */
+  async renderNativeSemanticResults(
+    container: HTMLElement,
+    query: string,
+    scope: 'library' | 'vault'
+  ) {
+    const idx = this.plugin.semanticIndexer;
+    if (!idx || !idx.enabled || idx.index.chunkCount === 0) return;
+
+    let vecHits: SemanticVectorHit[];
+    try {
+      vecHits = await idx.search(query, this.plugin.settings.semanticTopK || 20);
+    } catch (e: any) {
+      debugLog('View', 'Semantic search failed', { error: e.message });
+      return;
+    }
+    if (vecHits.length === 0) return;
+    if (scope === 'library') vecHits = vecHits.filter((h) => h.literature);
+    if (vecHits.length === 0) return;
 
     const vaultRoot = getVaultRoot();
     const outputPath = this.plugin.settings.convertOutputPath || 'literature';
+    const snippetLen = this.plugin.settings.ragSnippetLength || 180;
 
-    for (const hit of hits.slice(0, 20)) {
-      const card = group.createDiv({ cls: 'pwc-rag-card' });
-      card.createEl('div', { cls: 'pwc-rag-card-path', text: hit.path });
-      const snipEl = card.createDiv({ cls: 'pwc-rag-snippet' });
-      const raw = hit.content || '';
-      snipEl.setText(raw.length > 180 ? raw.slice(0, 180) + '…' : raw);
+    const group = container.createDiv({ cls: 'pwc-rag-group' });
+    group.createDiv({ cls: 'pwc-rag-group-title', text: `语义命中 · ${vecHits.length} 处` });
+    const resultContainer = group.createDiv({ cls: 'pwc-rag-files' });
 
-      const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
-      this.addIconAction(actions, 'file-text', t('Open note'), () => {
-        this.openNoteAtLine(hit.path, Math.max(1, hit.startLine));
-      });
+    // Group hits by document, keeping per-doc order.
+    const byDoc = new Map<string, SemanticVectorHit[]>();
+    for (const h of vecHits) {
+      const list = byDoc.get(h.path) || [];
+      list.push(h);
+      byDoc.set(h.path, list);
+    }
 
-      if (hit.citekey) {
-        const layout = readLiteratureLayout(vaultRoot, outputPath, hit.citekey);
-        const layoutHits = dedupeByPage(findLayoutBlocksByLines(layout, hit.startLine, hit.endLine));
-        for (const lh of layoutHits) {
-          this.addIconAction(
-            actions,
-            'crosshair',
-            `${t('Locate in PDF')} 第${lh.page}页`,
-            () => {
-              this.locateLiteraturePdf(hit.citekey!, lh);
-            }
-          );
-        }
+    for (const [path, hits] of byDoc) {
+      let content = '';
+      try {
+        content = fs.readFileSync(path.join(vaultRoot, path), 'utf-8');
+      } catch {
+        continue;
       }
+      const lines = content.split('\n');
+      const first = hits[0];
+      const layout = first.citekey
+        ? readLiteratureLayout(vaultRoot, outputPath, first.citekey)
+        : null;
+
+      const entries = hits
+        .map((h) => {
+          const start = Math.max(0, h.startLine - 1);
+          const end = Math.min(lines.length, h.endLine);
+          const snippet = lines.slice(start, end).join('\n').trim() || '...';
+          let page: number | undefined;
+          let bbox: number[] | null = null;
+          if (layout) {
+            const blocks = findLayoutBlocksByLines(layout, h.startLine, h.endLine);
+            if (blocks.length > 0) {
+              page = blocks[0].page;
+              bbox = blocks[0].bbox;
+            }
+          }
+          return {
+            line: h.startLine,
+            snippet: snippet.length > snippetLen ? snippet.slice(0, snippetLen) + '…' : snippet,
+            page,
+            bbox,
+          };
+        })
+        .filter((e) => e.snippet && e.snippet !== '...');
+
+      this.renderRagDocGroup(resultContainer, {
+        title: first.title || path,
+        path,
+        citekey: first.citekey,
+        layout,
+        hint: first.literature,
+      }, entries, query.trim().split(/\s+/).filter(Boolean));
     }
   }
 

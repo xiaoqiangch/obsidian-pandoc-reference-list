@@ -2,6 +2,7 @@ import { Notice, PluginSettingTab, Setting, TextComponent } from 'obsidian';
 import which from 'which';
 
 import { t } from './lang/helpers';
+import { testEmbeddingConnection } from './rag/embedding';
 import ReferenceList from './main';
 import ReactDOM from 'react-dom';
 import React from 'react';
@@ -39,8 +40,14 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   mineruApiToken: '',
   mineruModelVersion: 'vlm',
   enableRagSearch: true,
-  enableSemanticReuse: false,
   ragSnippetLength: 180,
+  enableNativeSemantic: false,
+  semanticEmbedApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+  semanticEmbedApiKey: '',
+  semanticEmbedModel: 'doubao-embedding-large-text-240915',
+  semanticChunkSize: 1200,
+  semanticChunkOverlap: 120,
+  semanticTopK: 20,
 };
 
 export interface ZoteroGroup {
@@ -82,8 +89,14 @@ export interface ReferenceListSettings {
   mineruApiToken: string;
   mineruModelVersion: string;
   enableRagSearch?: boolean;
-  enableSemanticReuse?: boolean;
   ragSnippetLength?: number;
+  enableNativeSemantic?: boolean;
+  semanticEmbedApiUrl?: string;
+  semanticEmbedApiKey?: string;
+  semanticEmbedModel?: string;
+  semanticChunkSize?: number;
+  semanticChunkOverlap?: number;
+  semanticTopK?: number;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -626,16 +639,113 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('语义检索增强（复用 shadow-writer-plus）')
-      .setDesc('启用后，检索结果会额外叠加 shadow-writer-plus 的向量语义检索（需该插件已启用并配置了可用的嵌入模型）。未检测到时自动忽略。')
+      .setName('原生语义检索（向量嵌入）')
+      .setDesc('启用后，检索结果会额外叠加“语义命中”分组：使用火山方舟文本嵌入模型对全库 markdown 分块建立向量索引，可按语义而非仅关键词匹配。')
       .addToggle((toggle) =>
         toggle
-          .setValue(!!this.plugin.settings.enableSemanticReuse)
+          .setValue(!!this.plugin.settings.enableNativeSemantic)
           .onChange((value) => {
-            this.plugin.settings.enableSemanticReuse = value;
+            this.plugin.settings.enableNativeSemantic = value;
+            this.plugin.saveSettings();
+            if (value && this.plugin.settings.semanticEmbedApiKey) {
+              this.plugin.initSemanticIndex();
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('嵌入 API 地址')
+      .setDesc('火山方舟标准 API 地址（Embedding 需使用 /api/v3 而非套餐 /api/plan/v3）。')
+      .addText((text) =>
+        text
+          .setPlaceholder('https://ark.cn-beijing.volces.com/api/v3')
+          .setValue(this.plugin.settings.semanticEmbedApiUrl || '')
+          .onChange((value) => {
+            this.plugin.settings.semanticEmbedApiUrl = value;
             this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName('嵌入 API Key')
+      .setDesc('火山方舟 API Key（需开通文本向量化模型；注意套餐 plan key 不支持 Embedding）。')
+      .addText((text) =>
+        text
+          .setPlaceholder('ark 标准 API Key')
+          .setValue(this.plugin.settings.semanticEmbedApiKey || '')
+          .onChange((value) => {
+            this.plugin.settings.semanticEmbedApiKey = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('嵌入模型')
+      .addText((text) =>
+        text
+          .setPlaceholder('doubao-embedding-large-text-240915')
+          .setValue(this.plugin.settings.semanticEmbedModel || '')
+          .onChange((value) => {
+            this.plugin.settings.semanticEmbedModel = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('分块大小（字符）')
+      .setDesc('语义索引按此大小对文档分块嵌入。')
+      .addSlider((slider) =>
+        slider
+          .setLimits(400, 3000, 100)
+          .setValue(this.plugin.settings.semanticChunkSize || 1200)
+          .onChange((value) => {
+            this.plugin.settings.semanticChunkSize = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('语义命中条数')
+      .setDesc('每次检索展示的语义命中数量。')
+      .addSlider((slider) =>
+        slider
+          .setLimits(5, 60, 5)
+          .setValue(this.plugin.settings.semanticTopK || 20)
+          .onChange((value) => {
+            this.plugin.settings.semanticTopK = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    const semanticStatus = new Setting(containerEl)
+      .setName('语义索引状态')
+      .setDesc(
+        `已索引 ${this.plugin.semanticIndexer.index.docCount} 个文件 / ${this.plugin.semanticIndexer.index.chunkCount} 个分块${
+          this.plugin.semanticIndexer.enabled ? '' : '（未启用或未配置 Key）'
+        }。`
+      );
+    semanticStatus.addButton((button) =>
+      button.setButtonText('测试连接').onClick(async () => {
+        try {
+          const dim = await testEmbeddingConnection({
+            apiUrl: this.plugin.settings.semanticEmbedApiUrl || '',
+            apiKey: this.plugin.settings.semanticEmbedApiKey || '',
+            model: this.plugin.settings.semanticEmbedModel || '',
+          });
+          new Notice(`嵌入连接正常（维度 ${dim}）`);
+        } catch (e: any) {
+          new Notice(`连接失败：${e.message}`);
+        }
+      })
+    );
+    semanticStatus.addButton((button) =>
+      button
+        .setButtonText('重建语义索引')
+        .setWarning()
+        .onClick(() => {
+          this.plugin.rebuildSemanticIndex();
+        })
+    );
 
     new Setting(containerEl)
       .setName('重建索引')
