@@ -1,6 +1,8 @@
-import { requestUrl } from 'obsidian';
+import { requestUrl, Notice } from 'obsidian';
 import { debugLog } from '../helpers';
 import { RawLayoutBlock } from '../rag/layout';
+import { getPdfPageCount } from './pdfRenderer';
+import { buildPageChunks, computeMaxAttempts, mergeChunkResults, MINERU_FOOTNOTE_TYPES } from './mineruChunks';
 
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +12,11 @@ const https = require('https');
 const MINERU_BASE = 'https://mineru.net/api/v4';
 const MAX_POLL_ATTEMPTS = 300;
 const POLL_INTERVAL_MS = 3000;
+
+// MinerU Precision Extract API limits (mineru.net/apiManage/docs).
+const MAX_FILE_SIZE_MB = 200;
+const MAX_PAGES_PER_TASK = 200;
+const DAILY_PAGE_QUOTA = 1000;
 
 export interface MineruConvertSettings {
   apiToken: string;
@@ -25,17 +32,28 @@ export interface MineruConvertResult {
 
 type MineruProgressFn = (current: number, total: number, message?: string) => void;
 
+interface MineruTaskOptions {
+  apiToken: string;
+  modelVersion: string;
+  pageRanges?: string;
+  zipSuffix?: string;
+  maxAttempts?: number;
+}
+
 /**
  * Convert a PDF to Markdown using the MinerU extraction API.
  *
  * Handles images, formulas (LaTeX), tables and references automatically.
  * Workflow:
- *   1. Request a presigned upload URL for the PDF.
- *   2. Upload the PDF bytes to the presigned URL.
- *   3. Poll the batch extract result until the task is done.
- *   4. Download the result zip archive.
- *   5. Extract full.md and the associated images, saving images into imagesDir and
+ *   1. Pre-check the file size / page count against the API limits.
+ *   2. Split documents above the page limit into page-range chunks and process
+ *      each chunk as its own MinerU task (upload once per chunk).
+ *   3. Upload the PDF bytes to the presigned URL.
+ *   4. Poll the batch extract result until the task is done.
+ *   5. Download the result zip archive.
+ *   6. Extract full.md and the associated images, saving images into imagesDir and
  *      rewriting the image references in the markdown to point at the saved files.
+ *   7. Merge chunk markdown / layout / footnotes so page numbers stay correct.
  */
 export async function convertPdfWithMineru(
   pdfPath: string,
@@ -50,37 +68,124 @@ export async function convertPdfWithMineru(
 
   const modelVersion = settings.modelVersion || 'vlm';
   const fileName = path.basename(pdfPath);
-  const dataId = fileName.replace(/\.[^.]+$/, '');
 
   debugLog('MineruConverter', 'Starting MinerU conversion', { fileName, modelVersion });
 
-  onProgress?.(0, 1, 'Requesting MinerU upload URL...');
-  const { batchId, uploadUrl } = await getUploadUrls(fileName, dataId, modelVersion, settings.apiToken);
+  // A. Pre-check: file size and page count against the API limits.
+  const stat = fs.statSync(pdfPath);
+  const sizeMB = stat.size / (1024 * 1024);
+  if (sizeMB > MAX_FILE_SIZE_MB) {
+    throw new Error(
+      `PDF 文件大小 ${sizeMB.toFixed(1)}MB 超过 MinerU 单文件 ${MAX_FILE_SIZE_MB}MB 限制，请压缩后重试。`
+    );
+  }
 
-  onProgress?.(0, 1, 'Uploading PDF to MinerU...');
-  await uploadFile(uploadUrl, pdfPath);
+  const totalPages = await getPdfPageCount(pdfPath);
 
-  onProgress?.(0, 1, 'MinerU is processing the PDF...');
-  const result = await pollBatchResult(batchId, settings.apiToken, onProgress);
+  // D. Daily quota awareness.
+  if (totalPages > DAILY_PAGE_QUOTA) {
+    new Notice(
+      `MinerU 每日免费额度为 ${DAILY_PAGE_QUOTA} 页，本文档共 ${totalPages} 页，超出部分将进入低优先级队列。`
+    );
+  }
 
-  onProgress?.(0, 1, 'Downloading MinerU result...');
-  const zipPath = path.join(imagesDir, `${dataId}-mineru-result.zip`);
-  await downloadFile(result.fullZipUrl, zipPath, settings.apiToken);
+  // B. Split large documents into page-range chunks.
+  const chunks = buildPageChunks(totalPages, MAX_PAGES_PER_TASK);
+  if (chunks.length > 1) {
+    new Notice(
+      `文档共 ${totalPages} 页，将分 ${chunks.length} 次转换（每次 ≤ ${MAX_PAGES_PER_TASK} 页），进度以分片显示。`
+    );
+  }
 
-  const extracted = extractZip(zipPath, imagesDir, imageRelativePrefix);
+  const rawResults: MineruConvertResult[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const [start, end] = chunks[i];
+    const chunkPages = end - start + 1;
+    const label = chunks.length > 1 ? `分片 ${i + 1}/${chunks.length} (${start}-${end}页)` : '';
+
+    onProgress?.(
+      i,
+      chunks.length,
+      label ? `MinerU 正在转换 ${label}...` : 'MinerU 正在转换...'
+    );
+
+    const task = await runMineruTask(
+      pdfPath,
+      imagesDir,
+      imageRelativePrefix,
+      {
+        apiToken: settings.apiToken,
+        modelVersion,
+        pageRanges: `${start}-${end}`,
+        zipSuffix: chunks.length > 1 ? `chunk${i + 1}` : undefined,
+        maxAttempts: computeMaxAttempts(chunkPages, MAX_POLL_ATTEMPTS),
+      },
+      onProgress
+    );
+    rawResults.push(task);
+  }
+
+  // Merge chunk results so page numbers (layout / footnotes) stay correct.
+  let extracted: MineruConvertResult;
+  if (rawResults.length === 1) {
+    extracted = rawResults[0];
+  } else {
+    extracted = mergeChunkResults(rawResults, chunks.map((c) => c[0]));
+  }
 
   if (extracted.footnotes && extracted.footnotes.trim().length > 0) {
     extracted.mdContent = extracted.mdContent.trim() + '\n\n' + extracted.footnotes + '\n';
   }
 
-  // Keep the raw MinerU result zip for inspection / debugging.
-  debugLog('MineruConverter', 'MinerU result zip preserved', { zipPath });
-
   debugLog('MineruConverter', 'MinerU conversion completed', {
     mdLength: extracted.mdContent.length,
     imageCount: extracted.imageCount,
     footnoteLength: extracted.footnotes?.length || 0,
+    chunks: chunks.length,
   });
+
+  return extracted;
+}
+
+async function runMineruTask(
+  pdfPath: string,
+  imagesDir: string,
+  imageRelativePrefix: string,
+  opts: MineruTaskOptions,
+  onProgress?: MineruProgressFn
+): Promise<MineruConvertResult> {
+  const fileName = path.basename(pdfPath);
+  const dataId = fileName.replace(/\.[^.]+$/, '');
+  const zipSuffix = opts.zipSuffix ? `-${opts.zipSuffix}` : '';
+
+  onProgress?.(0, 1, 'Requesting MinerU upload URL...');
+  const { batchId, uploadUrl } = await getUploadUrls(
+    fileName,
+    dataId,
+    opts.modelVersion,
+    opts.apiToken,
+    opts.pageRanges
+  );
+
+  onProgress?.(0, 1, 'Uploading PDF to MinerU...');
+  await uploadFile(uploadUrl, pdfPath);
+
+  onProgress?.(0, 1, 'MinerU is processing the PDF...');
+  const result = await pollBatchResult(
+    batchId,
+    opts.apiToken,
+    onProgress,
+    opts.maxAttempts
+  );
+
+  onProgress?.(0, 1, 'Downloading MinerU result...');
+  const zipPath = path.join(imagesDir, `${dataId}${zipSuffix}-mineru-result.zip`);
+  await downloadFile(result.fullZipUrl, zipPath, opts.apiToken);
+
+  const extracted = extractZip(zipPath, imagesDir, imageRelativePrefix);
+
+  // Keep the raw MinerU result zip for inspection / debugging.
+  debugLog('MineruConverter', 'MinerU result zip preserved', { zipPath });
 
   return extracted;
 }
@@ -89,7 +194,8 @@ async function getUploadUrls(
   fileName: string,
   dataId: string,
   modelVersion: string,
-  token: string
+  token: string,
+  pageRanges?: string
 ): Promise<{ batchId: string; uploadUrl: string }> {
   const response = await requestUrl({
     url: `${MINERU_BASE}/file-urls/batch`,
@@ -99,7 +205,13 @@ async function getUploadUrls(
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      files: [{ name: fileName, data_id: dataId }],
+      files: [
+        {
+          name: fileName,
+          data_id: dataId,
+          ...(pageRanges ? { page_ranges: pageRanges } : {}),
+        },
+      ],
       model_version: modelVersion,
     }),
   }).catch((e: any) => {
@@ -119,7 +231,7 @@ async function getUploadUrls(
     throw new Error('MinerU did not return an upload URL.');
   }
 
-  debugLog('MineruConverter', 'Upload URL obtained', { batchId, uploadUrl });
+  debugLog('MineruConverter', 'Upload URL obtained', { batchId, uploadUrl, pageRanges });
   return { batchId, uploadUrl };
 }
 
@@ -168,11 +280,12 @@ function uploadFile(uploadUrl: string, filePath: string): Promise<void> {
 async function pollBatchResult(
   batchId: string,
   token: string,
-  onProgress?: MineruProgressFn
+  onProgress?: MineruProgressFn,
+  maxAttempts: number = MAX_POLL_ATTEMPTS
 ): Promise<{ fullZipUrl: string; errMsg?: string }> {
   const url = `${MINERU_BASE}/extract-results/batch/${batchId}`;
 
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const response = await requestUrl({
       url,
       method: 'GET',
@@ -344,7 +457,7 @@ function extractZip(
     dumpLines.push(JSON.stringify(typeCount));
     dumpLines.push('=== footnote-type blocks ===');
     for (const b of blocks) {
-      if (FOOTNOTE_TYPES.has(b.type)) {
+      if (MINERU_FOOTNOTE_TYPES.has(b.type)) {
         dumpLines.push(`[p${b.pageIdx}][${b.type}] ${b.text.slice(0, 200)}`);
       }
     }
@@ -376,8 +489,6 @@ interface ContentBlock {
   bbox: number[] | null;
 }
 
-const FOOTNOTE_TYPES = new Set(['page_footnote', 'footer', 'aside_text', 'ref_text']);
-
 function buildFootnotesMarkdown(mdContent: string, contentList: any): string {
   if (!contentList) return '';
 
@@ -386,7 +497,7 @@ function buildFootnotesMarkdown(mdContent: string, contentList: any): string {
 
   const byPage = new Map<number, string[]>();
   for (const block of blocks) {
-    if (!FOOTNOTE_TYPES.has(block.type)) continue;
+    if (!MINERU_FOOTNOTE_TYPES.has(block.type)) continue;
     const list = byPage.get(block.pageIdx) || [];
     list.push(block.text);
     byPage.set(block.pageIdx, list);
