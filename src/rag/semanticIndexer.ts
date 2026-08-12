@@ -1,5 +1,5 @@
 import { App, TFile } from 'obsidian';
-import { debugLog, getCacheRoot } from '../helpers';
+import { debugLog, getCacheRoot, getVaultRoot } from '../helpers';
 import { SemanticVectorIndex, SemanticVectorHit } from './vectorIndex';
 import { chunkByLines } from './chunker';
 import { embedTexts, EmbeddingSettings } from './embedding';
@@ -21,6 +21,13 @@ export interface SemanticIndexerSettings {
   chunkSize: number;
   chunkOverlap: number;
   topK: number;
+  /** Where the index lives: 'vault' (inside the vault, synced) or 'local'
+   *  (~/.bib-manager-index). */
+  indexLocation: 'vault' | 'local';
+  /** Index files inside folders that are symbolic links (default true). */
+  followSymlinks: boolean;
+  /** Folder names whose content is never indexed (e.g. node_modules). */
+  excludeFolders: string[];
 }
 
 export interface IndexProgress {
@@ -34,8 +41,10 @@ export interface IndexProgress {
 /**
  * Builds and maintains a semantic (embedding) index over vault markdown files.
  * - Incremental: only changed / added / removed files are re-embedded.
- * - Persisted: JSON metadata + raw binary vector payload under
- *   a vault-external cache dir (semantic-index.json / semantic-vectors.bin).
+ * - Persisted: JSON metadata + raw binary vector payload (semantic-index.json
+ *   / semantic-vectors.bin) either inside the vault (.bib-manager/) — the
+ *   default, so the index syncs with the vault — or under the vault-external
+ *   ~/.bib-manager-index cache dir.
  * - Background: processing yields to idle callbacks; embedding is batched.
  */
 export class SemanticIndexer {
@@ -51,8 +60,6 @@ export class SemanticIndexer {
   pendingCount = -1;
   private app: App;
   private outputPath: string;
-  private cacheJsonPath: string;
-  private cacheBinPath: string;
   private settings: SemanticIndexerSettings;
   private busy = false;
   private cacheDirty = false;
@@ -63,8 +70,31 @@ export class SemanticIndexer {
     this.app = app;
     this.outputPath = outputPath;
     this.settings = settings;
-    this.cacheJsonPath = path.join(getCacheRoot(), 'semantic-index.json');
-    this.cacheBinPath = path.join(getCacheRoot(), 'semantic-vectors.bin');
+  }
+
+  /** Resolve the current cache file paths from the storage-location setting. */
+  private cachePaths(): { json: string; bin: string } {
+    const root =
+      this.settings.indexLocation === 'vault'
+        ? path.join(getVaultRoot(), '.bib-manager')
+        : getCacheRoot();
+    return {
+      json: path.join(root, 'semantic-index.json'),
+      bin: path.join(root, 'semantic-vectors.bin'),
+    };
+  }
+
+  /** Indexing options for {@link shouldIndexPath}. */
+  private indexOptions(): { followSymlinks: boolean; excludeFolders: string[] } {
+    return {
+      followSymlinks: this.settings.followSymlinks,
+      excludeFolders: this.settings.excludeFolders,
+    };
+  }
+
+  /** Apply setting changes without recreating the indexer. */
+  updateSettings(partial: Partial<SemanticIndexerSettings>): void {
+    Object.assign(this.settings, partial);
   }
 
   get enabled(): boolean {
@@ -84,7 +114,8 @@ export class SemanticIndexer {
 
   async loadCache(): Promise<boolean> {
     try {
-      if (!fs.existsSync(this.cacheJsonPath) || !fs.existsSync(this.cacheBinPath)) return false;
+      const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
+      if (!fs.existsSync(cacheJsonPath) || !fs.existsSync(cacheBinPath)) return false;
       const raw = JSON.parse(fs.readFileSync(this.cacheJsonPath, 'utf-8'));
       if (!raw || raw.version !== CACHE_VERSION) return false;
       this.index.model = raw.model || '';
@@ -116,12 +147,13 @@ export class SemanticIndexer {
 
   private writeCache(): void {
     try {
-      const dir = path.dirname(this.cacheJsonPath);
+      const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
+      const dir = path.dirname(cacheJsonPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const json = this.index.toJSON();
       json.version = CACHE_VERSION;
-      fs.writeFileSync(this.cacheJsonPath, JSON.stringify(json), 'utf-8');
-      fs.writeFileSync(this.cacheBinPath, this.index.toVectorBuffer());
+      fs.writeFileSync(cacheJsonPath, JSON.stringify(json), 'utf-8');
+      fs.writeFileSync(cacheBinPath, this.index.toVectorBuffer());
       debugLog('SemanticIndexer', 'Cache saved', {
         docs: this.index.docCount,
         chunks: this.index.chunkCount,
@@ -140,7 +172,7 @@ export class SemanticIndexer {
     try {
       const files = this.app.vault
         .getMarkdownFiles()
-        .filter((f) => shouldIndexPath(f.path));
+        .filter((f) => shouldIndexPath(f.path, undefined, this.indexOptions()));
       this.index = new SemanticVectorIndex();
       this.index.model = this.settings.model;
       this.failedCount = 0;
@@ -183,7 +215,7 @@ export class SemanticIndexer {
     try {
       const files = this.app.vault
         .getMarkdownFiles()
-        .filter((f) => shouldIndexPath(f.path));
+        .filter((f) => shouldIndexPath(f.path, undefined, this.indexOptions()));
 
       const current = new Set<string>();
       for (const f of files) current.add(f.path);
@@ -245,7 +277,7 @@ export class SemanticIndexer {
     let total = 0;
     const files = this.app.vault.getMarkdownFiles();
     for (const f of files) {
-      if (!shouldIndexPath(f.path)) continue;
+      if (!shouldIndexPath(f.path, undefined, this.indexOptions())) continue;
       total++;
       if (docChanged(this.index.getMeta(f.path), f.stat)) pending++;
     }

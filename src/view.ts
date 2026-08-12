@@ -67,11 +67,11 @@ export class ReferenceListView extends ItemView {
 
   sortField: SortField = 'year';
   sortDirection: SortDirection = 'desc';
-  filterType: string = '';
-  filterSource: string = '';
 
   conversionProgress: Map<string, ConvertProgress> = new Map();
 
+  /** Which search-result groups are currently toggled on (visible). */
+  private ragGroupVisibility: Set<string> = new Set(['meta', 'rerank', 'fulltext', 'semantic']);
   private ragNavButtons: Map<string, HTMLElement> | null = null;
   private _pendingListState: ListState | null = null;
   private _skipStateCapture = false;
@@ -156,8 +156,6 @@ export class ReferenceListView extends ItemView {
         this.displayedCount = 50;
         this.showAddSection = false;
         this.pendingEntries = [];
-        this.filterType = '';
-        this.filterSource = '';
         
         // Update button state and title immediately
         btn.toggleClass('is-active', this.mode === 'all');
@@ -290,118 +288,18 @@ export class ReferenceListView extends ItemView {
       }
     });
 
-    if (this.mode === 'all') {
-      this.renderFilterSortToolbar(header);
-    }
   }
 
-  /** When entering 'all' mode via search (debouncedRender path), re-render the
-   *  header so the filter/sort toolbar appears — without wiping the list. */
+  /** Keep the header title in sync with the mode without a full re-render. */
   private syncHeaderToMode() {
     const header = this.contentEl.querySelector(
       '.pwc-reference-list__header'
     ) as HTMLElement | null;
     if (!header) return;
-    const hasToolbar = !!header.querySelector('.pwc-filter-toolbar');
-    if (this.mode === 'all' && !hasToolbar) {
-      this.renderFilterSortToolbar(header);
-    } else if (this.mode === 'current' && hasToolbar) {
-      header.querySelector('.pwc-filter-toolbar')?.remove();
-    }
     const titleEl = header.querySelector('.pwc-reference-list__title')?.firstChild as HTMLElement | null;
     if (titleEl) {
       titleEl.textContent = this.mode === 'current' ? t('Current References') : t('All References');
     }
-  }
-
-  getEntrySourceLabel(entry: PartialCSLEntry): string {
-    if (entry.sourceFile) {
-      return path.basename(entry.sourceFile);
-    }
-    if (this.plugin.settings.pullFromZotero) {
-      return 'Zotero';
-    }
-    return t('Unknown');
-  }
-
-  getUniqueTypes(): string[] {
-    const types = new Set<string>();
-    for (const entry of this.plugin.bibManager.bibCache.values()) {
-      if (entry.type) types.add(entry.type);
-    }
-    return Array.from(types).sort();
-  }
-
-  getUniqueSources(): string[] {
-    const sources = new Set<string>();
-    for (const entry of this.plugin.bibManager.bibCache.values()) {
-      sources.add(this.getEntrySourceLabel(entry));
-    }
-    return Array.from(sources).sort();
-  }
-
-  renderFilterSortToolbar(header: HTMLElement) {
-    const toolbar = header.createDiv({ cls: 'pwc-filter-toolbar' });
-
-    const sortContainer = toolbar.createDiv({ cls: 'pwc-filter-group' });
-    sortContainer.createDiv({ cls: 'pwc-filter-label', text: t('Sort') });
-
-    const sortSelect = sortContainer.createEl('select', { cls: 'pwc-filter-select' });
-    const sortOptions: { value: SortField; label: string }[] = [
-      { value: 'year', label: t('Year') },
-      { value: 'title', label: t('Title') },
-      { value: 'author', label: t('Author') },
-      { value: 'addDate', label: t('Date Added') },
-      { value: 'id', label: t('Citekey') },
-    ];
-    for (const opt of sortOptions) {
-      const el = sortSelect.createEl('option', { value: opt.value, text: opt.label });
-      if (opt.value === this.sortField) el.selected = true;
-    }
-    sortSelect.addEventListener('change', () => {
-      this.sortField = sortSelect.value as SortField;
-      this.debouncedRender();
-    });
-
-    const dirBtn = sortContainer.createDiv({ cls: 'clickable-icon pwc-sort-dir' });
-    setIcon(dirBtn, this.sortDirection === 'desc' ? 'arrow-down-narrow-wide' : 'arrow-up-narrow-wide');
-    dirBtn.setAttr('aria-label', this.sortDirection === 'desc' ? t('Descending') : t('Ascending'));
-    dirBtn.toggleClass('is-active', this.sortDirection === 'asc');
-    dirBtn.onClickEvent(() => {
-      this.sortDirection = this.sortDirection === 'desc' ? 'asc' : 'desc';
-      setIcon(dirBtn, this.sortDirection === 'desc' ? 'arrow-down-narrow-wide' : 'arrow-up-narrow-wide');
-      dirBtn.setAttr('aria-label', this.sortDirection === 'desc' ? t('Descending') : t('Ascending'));
-      dirBtn.toggleClass('is-active', this.sortDirection === 'asc');
-      this.debouncedRender();
-    });
-
-    const typeContainer = toolbar.createDiv({ cls: 'pwc-filter-group' });
-    typeContainer.createDiv({ cls: 'pwc-filter-label', text: t('Type') });
-    const typeSelect = typeContainer.createEl('select', { cls: 'pwc-filter-select' });
-    typeSelect.createEl('option', { value: '', text: t('All Types') });
-    for (const type of this.getUniqueTypes()) {
-      const el = typeSelect.createEl('option', { value: type, text: type });
-      if (type === this.filterType) el.selected = true;
-    }
-    typeSelect.addEventListener('change', () => {
-      this.filterType = typeSelect.value;
-      this.displayedCount = 50;
-      this.debouncedRender();
-    });
-
-    const sourceContainer = toolbar.createDiv({ cls: 'pwc-filter-group' });
-    sourceContainer.createDiv({ cls: 'pwc-filter-label', text: t('Source') });
-    const sourceSelect = sourceContainer.createEl('select', { cls: 'pwc-filter-select' });
-    sourceSelect.createEl('option', { value: '', text: t('All Sources') });
-    for (const source of this.getUniqueSources()) {
-      const el = sourceSelect.createEl('option', { value: source, text: source });
-      if (source === this.filterSource) el.selected = true;
-    }
-    sourceSelect.addEventListener('change', () => {
-      this.filterSource = sourceSelect.value;
-      this.displayedCount = 50;
-      this.debouncedRender();
-    });
   }
 
   filterCurrentReferences() {
@@ -917,23 +815,64 @@ export class ReferenceListView extends ItemView {
     }
   }
 
-  /** Sticky quick-jump nav for the 文献条目 / 正文命中 / 语义命中 groups. */
+  /** Sticky quick-jump nav for the 文献条目 / 重排序命中 / 正文命中 / 语义命中
+   *  groups: a back-to-top icon button plus one checkbox-style icon toggle per
+   *  group. All toggles start on; clicking one hides/shows that group's results. */
   private renderGroupNav(container: HTMLElement) {
     const nav = container.createDiv({ cls: 'pwc-rag-nav' });
     this.ragNavButtons = new Map<string, HTMLElement>();
+
+    const topBtn = nav.createEl('button', {
+      cls: 'clickable-icon pwc-rag-nav-top',
+      attr: { 'aria-label': t('Back to top') },
+    });
+    setIcon(topBtn, 'arrow-up');
+    topBtn.addEventListener('click', () => this.jumpToGroup('top'));
+
     const groups = [
-      { key: 'top', label: t('Back to top') },
-      { key: 'meta', label: t('Reference entries') },
-      { key: 'rerank', label: '重排序命中' },
-      { key: 'fulltext', label: t('Full-text hits') },
-      { key: 'semantic', label: '语义命中' },
+      { key: 'meta', label: t('Reference entries'), icon: 'lucide-book-open' },
+      { key: 'rerank', label: '重排序命中', icon: 'lucide-list-restart' },
+      { key: 'fulltext', label: t('Full-text hits'), icon: 'lucide-file-text' },
+      { key: 'semantic', label: '语义命中', icon: 'lucide-sparkles' },
     ];
     for (const g of groups) {
-      const btn = nav.createEl('button', { cls: 'pwc-rag-nav-btn', text: g.label });
-      btn.setAttr('data-group', g.key);
-      btn.addEventListener('click', () => this.jumpToGroup(g.key));
-      if (g.key !== 'top') this.ragNavButtons.set(g.key, btn);
+      const visible = this.ragGroupVisibility.has(g.key);
+      const btn = nav.createEl('button', {
+        cls: 'clickable-icon pwc-rag-nav-toggle',
+        attr: {
+          'aria-label': g.label,
+          'aria-pressed': visible ? 'true' : 'false',
+          'data-group': g.key,
+        },
+      });
+      setIcon(btn, g.icon);
+      btn.toggleClass('is-active', visible);
+      btn.addEventListener('click', () => this.toggleRagGroup(g.key, btn));
+      this.ragNavButtons.set(g.key, btn);
     }
+  }
+
+  /** Toggle a group's visibility on/off (checkbox-style icon button). */
+  private toggleRagGroup(key: string, btn: HTMLElement) {
+    if (this.ragGroupVisibility.has(key)) {
+      this.ragGroupVisibility.delete(key);
+    } else {
+      this.ragGroupVisibility.add(key);
+    }
+    const visible = this.ragGroupVisibility.has(key);
+    btn.toggleClass('is-active', visible);
+    btn.setAttr('aria-pressed', visible ? 'true' : 'false');
+    this.applyGroupVisibility();
+  }
+
+  /** Show/hide each rendered result group according to the toggle state. */
+  private applyGroupVisibility() {
+    if (!this.ragNavButtons) return;
+    this.ragNavButtons.forEach((_btn, key) => {
+      const group = this.contentEl.querySelector(`[data-rag-group="${key}"]`) as HTMLElement | null;
+      if (!group) return;
+      group.style.display = this.ragGroupVisibility.has(key) ? '' : 'none';
+    });
   }
 
   /** Hide nav buttons whose group did not render any results. */
@@ -944,6 +883,7 @@ export class ReferenceListView extends ItemView {
       const isEmpty = !group || !!group.querySelector('.pane-empty');
       btn.toggleClass('is-hidden', isEmpty);
     });
+    this.applyGroupVisibility();
   }
 
   private jumpToGroup(key: string) {
@@ -952,11 +892,7 @@ export class ReferenceListView extends ItemView {
       if (scrollEl) {
         (scrollEl as HTMLElement).scrollTo({ top: 0, behavior: 'smooth' });
       }
-      return;
     }
-    const target = this.contentEl.querySelector(`[data-rag-group="${key}"]`) as HTMLElement | null;
-    if (!target) return;
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   /** Render bibliography entries (bib/Zotero metadata) matching the query.
@@ -1503,14 +1439,6 @@ export class ReferenceListView extends ItemView {
         this.filteredEntries = this.filteredEntries.filter(entry =>
             matchesMeta(entry, q)
         );
-    }
-
-    if (this.filterType) {
-        this.filteredEntries = this.filteredEntries.filter(entry => entry.type === this.filterType);
-    }
-
-    if (this.filterSource) {
-        this.filteredEntries = this.filteredEntries.filter(entry => this.getEntrySourceLabel(entry) === this.filterSource);
     }
 
     if (this.isRecentOnly) {

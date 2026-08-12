@@ -251,51 +251,6 @@ body {
     color: var(--text-normal);
 }
 
-.pwc-filter-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-    padding: 0 5px;
-}
-
-.pwc-filter-group {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-.pwc-filter-label {
-    font-size: var(--font-ui-smaller);
-    color: var(--text-muted);
-    white-space: nowrap;
-}
-
-.pwc-filter-select {
-    font-size: var(--font-ui-smaller);
-    padding: 2px 6px;
-    border-radius: var(--radius-s);
-    border: 1px solid var(--background-modifier-border);
-    background-color: var(--background-modifier-form-field);
-    color: var(--text-normal);
-    cursor: pointer;
-    max-width: 140px;
-}
-
-.pwc-filter-select:hover {
-    border-color: var(--background-modifier-border-hover);
-}
-
-.pwc-filter-select:focus {
-    border-color: var(--interactive-accent);
-    outline: none;
-}
-
-.pwc-sort-dir {
-    padding: 2px;
-}
-
 .pwc-reference-list a.footnote-ref {
   vertical-align: super;
 }
@@ -1056,13 +1011,14 @@ body {
     margin-top: 4px;
 }
 
-/* RAG 分组快速跳转导航条（sticky，悬浮在结果列表顶部） */
+/* RAG 分组导航条（sticky）：回到顶端图标按钮 + 分组图标开关（默认全部按下） */
 .pwc-rag-nav {
     position: sticky;
     top: 0;
     z-index: 20;
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 4px;
     padding: 4px 0;
     margin-bottom: 4px;
@@ -1070,21 +1026,39 @@ body {
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.pwc-rag-nav-btn {
-    font-size: var(--font-ui-smaller);
+.pwc-rag-nav-top {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--text-normal);
-    background: var(--background-secondary);
+}
+
+.pwc-rag-nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    color: var(--text-muted);
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-s, 4px);
-    padding: 2px 8px;
+    background: var(--background-secondary);
     cursor: pointer;
 }
 
-.pwc-rag-nav-btn:hover {
+.pwc-rag-nav-toggle:hover {
+    color: var(--text-normal);
     background: var(--background-modifier-hover);
 }
 
-.pwc-rag-nav-btn.is-hidden {
+.pwc-rag-nav-toggle.is-active {
+    color: var(--text-accent);
+    border-color: var(--interactive-accent);
+    background: var(--background-modifier-hover);
+}
+
+.pwc-rag-nav-toggle.is-hidden {
     display: none;
 }
 

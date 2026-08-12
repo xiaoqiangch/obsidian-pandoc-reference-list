@@ -6,23 +6,30 @@ const fs = require('fs');
 const path = require('path');
 
 const EXCLUDE_DIR_RE = /(^|\/)(\.trash|\.obsidian|\.git|\.openclaw|_bib-links)(\/|$)/;
-const EXCLUDE_ANY_DIR_RE = /(^|\/)(node_modules|\.yarn|bower_components)(\/|$)/;
+/** Folder names excluded from indexing by default (user-configurable). */
+export const DEFAULT_EXCLUDE_FOLDERS = ['node_modules', '.yarn', 'bower_components'];
 const CACHE_VERSION = 2;
 const IDLE_BATCH = 40;
 // iCloud / APFS on-demand materialization can briefly shift a file's mtime
 // without the content changing; a small tolerance avoids spurious re-indexes.
 const ICLOUD_MTIME_TOLERANCE_MS = 2000;
 
+export interface IndexerOptions {
+  /** Index files inside folders that are symbolic links (default true). */
+  followSymlinks: boolean;
+  /** Folder names whose content is never indexed (e.g. node_modules). */
+  excludeFolders: string[];
+}
+
 // Cache of checked absolute directory paths -> whether that component is a
 // symlink. Symlinked folders (e.g. project folders pointed into the vault)
-// pull in external content like node_modules READMEs that must not be indexed.
+// can pull in external content like node_modules READMEs.
 const symlinkCache = new Map<string, boolean>();
 
 /**
  * Returns true when any path component below the vault root (or the file
  * itself) is a symlink, i.e. the file lives in a folder that was linked into
- * the vault rather than stored in it. Such external folders (project dirs,
- * node_modules, ...) are excluded from indexing.
+ * the vault rather than stored in it.
  */
 function pathTraversesSymlink(relPath: string, vaultRoot?: string): boolean {
   let root = vaultRoot;
@@ -53,12 +60,29 @@ function pathTraversesSymlink(relPath: string, vaultRoot?: string): boolean {
   return false;
 }
 
-export function shouldIndexPath(relPath: string, vaultRoot?: string): boolean {
+/** True when any directory component of relPath equals the folder name. */
+function matchesAnyDir(relPath: string, name: string): boolean {
+  if (!name) return false;
+  const parts = relPath.split('/');
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (parts[i] === name) return true;
+  }
+  return false;
+}
+
+export function shouldIndexPath(
+  relPath: string,
+  vaultRoot?: string,
+  opts?: IndexerOptions
+): boolean {
   if (!relPath.toLowerCase().endsWith('.md')) return false;
   if (EXCLUDE_DIR_RE.test(relPath)) return false;
-  if (EXCLUDE_ANY_DIR_RE.test(relPath)) return false;
   if (relPath.startsWith('.') || relPath.indexOf('/.') >= 0) return false;
-  if (pathTraversesSymlink(relPath, vaultRoot)) return false;
+  const excludeFolders = opts?.excludeFolders ?? DEFAULT_EXCLUDE_FOLDERS;
+  if (excludeFolders.some((name) => matchesAnyDir(relPath, name))) return false;
+  if ((opts?.followSymlinks ?? true) === false) {
+    if (pathTraversesSymlink(relPath, vaultRoot)) return false;
+  }
   return true;
 }
 
@@ -108,14 +132,21 @@ export class RagIndexer {
   private app: App;
   private outputPath: string;
   private cachePath: string;
+  private opts: IndexerOptions;
   private busy = false;
   private cacheDirty = false;
   private saveTimer: any = null;
 
-  constructor(app: App, outputPath: string) {
+  constructor(app: App, outputPath: string, opts: IndexerOptions) {
     this.app = app;
     this.outputPath = outputPath;
+    this.opts = opts;
     this.cachePath = path.join(getCacheRoot(), 'rag-index.json');
+  }
+
+  /** Apply indexing-option changes without recreating the indexer. */
+  updateOptions(partial: Partial<IndexerOptions>): void {
+    Object.assign(this.opts, partial);
   }
 
   isLiteraturePath(relPath: string): boolean {
@@ -123,7 +154,7 @@ export class RagIndexer {
   }
 
   shouldIndex(relPath: string): boolean {
-    return shouldIndexPath(relPath);
+    return shouldIndexPath(relPath, undefined, this.opts);
   }
 
   async loadCache(): Promise<boolean> {

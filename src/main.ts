@@ -81,7 +81,11 @@ export default class ReferenceList extends Plugin {
     this.bibManager = new BibManager(this);
     this.ragIndexer = new RagIndexer(
       this.app,
-      this.settings.convertOutputPath || 'literature'
+      this.settings.convertOutputPath || 'literature',
+      {
+        followSymlinks: this.settings.indexFollowSymlinks !== false,
+        excludeFolders: this.settings.indexExcludeFolders || [],
+      }
     );
     this.semanticIndexer = new SemanticIndexer(
       this.app,
@@ -94,6 +98,9 @@ export default class ReferenceList extends Plugin {
         chunkSize: this.settings.semanticChunkSize || 1200,
         chunkOverlap: this.settings.semanticChunkOverlap || 120,
         topK: this.settings.semanticTopK || 20,
+        indexLocation: (this.settings.semanticIndexLocation || 'vault') === 'local' ? 'local' : 'vault',
+        followSymlinks: this.settings.indexFollowSymlinks !== false,
+        excludeFolders: this.settings.indexExcludeFolders || [],
       }
     );
     this.initPromise.promise
@@ -662,9 +669,26 @@ export default class ReferenceList extends Plugin {
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // NOTE: do not call syncIndexSettings() here — the indexers are created
+    // in onload() *after* loadSettings(), so they do not exist yet.
+  }
+
+  /** Push the current indexing-related settings into the indexers so changes
+   *  take effect immediately (no plugin reload needed). */
+  private syncIndexSettings() {
+    if (!this.ragIndexer || !this.semanticIndexer) return;
+    const followSymlinks = this.settings.indexFollowSymlinks !== false;
+    const excludeFolders = this.settings.indexExcludeFolders || [];
+    this.ragIndexer.updateOptions({ followSymlinks, excludeFolders });
+    this.semanticIndexer.updateSettings({
+      indexLocation: (this.settings.semanticIndexLocation || 'vault') === 'local' ? 'local' : 'vault',
+      followSymlinks,
+      excludeFolders,
+    });
   }
 
   async saveSettings(cb?: () => void) {
+    this.syncIndexSettings();
     document.body.toggleClass(
       'pwc-tooltips',
       !!this.settings.showCitekeyTooltips

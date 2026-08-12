@@ -43,7 +43,10 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   enableRagSearch: true,
   ragSnippetLength: 180,
   ragMinTermCoverage: 1,
+  indexFollowSymlinks: true,
+  indexExcludeFolders: ['node_modules', '.yarn', 'bower_components'],
   enableNativeSemantic: false,
+  semanticIndexLocation: 'vault',
   semanticEmbedApiUrl: 'http://localhost:8080/v1',
   semanticEmbedApiKey: '',
   semanticEmbedModel: 'jina-embeddings-v5-omni',
@@ -100,7 +103,14 @@ export interface ReferenceListSettings {
   enableRagSearch?: boolean;
   ragSnippetLength?: number;
   ragMinTermCoverage?: number;
+  /** Index files inside folders that are symbolic links (default true). */
+  indexFollowSymlinks?: boolean;
+  /** Folder names whose content is never indexed (e.g. node_modules). */
+  indexExcludeFolders?: string[];
   enableNativeSemantic?: boolean;
+  /** Where the semantic embedding index is stored: 'vault' (inside the Obsidian
+   *  vault, synced with the vault) or 'local' (~/.bib-manager-index). */
+  semanticIndexLocation?: 'vault' | 'local';
   semanticEmbedApiUrl?: string;
   semanticEmbedApiKey?: string;
   semanticEmbedModel?: string;
@@ -665,6 +675,35 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName('索引符号链接文件夹')
+      .setDesc('对符号链接（Symbolic Link）指向的文件夹内的文件也进行索引。默认开启；关闭后将跳过通过符号链接引入的外部文件夹。改动后需点击下方“重建索引”。')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.indexFollowSymlinks !== false)
+          .onChange(async (value) => {
+            this.plugin.settings.indexFollowSymlinks = value;
+            await this.plugin.saveSettings();
+            new Notice('已更新符号链接索引设置，请在下方“重建索引”处重建索引。');
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('排除索引的文件夹')
+      .setDesc('以下名称的文件夹（含其所有子目录）不参与索引，多个用逗号分隔。默认已排除 node_modules、.yarn、bower_components。改动后需重建索引。')
+      .addText((text) =>
+        text
+          .setPlaceholder('node_modules, .yarn, bower_components')
+          .setValue((this.plugin.settings.indexExcludeFolders || []).join(', '))
+          .onChange(async (value) => {
+            this.plugin.settings.indexExcludeFolders = value
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName('原生语义检索（向量嵌入）')
       .setDesc('启用后，检索结果会额外叠加“语义命中”分组：对全库 markdown 分块建立向量索引，可按语义而非仅关键词匹配。默认指向本地 Docker 的 jina-embeddings-v5-omni（OpenAI 兼容 /embeddings 接口）。')
       .addToggle((toggle) =>
@@ -676,6 +715,23 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             if (value && this.plugin.settings.semanticEmbedApiKey) {
               this.plugin.initSemanticIndex();
             }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('语义索引存放位置')
+      .setDesc('嵌入索引文件的存储位置：仓库内（默认，存放在仓库隐藏目录 .bib-manager/，随仓库同步到各设备）或本地 ~/.bib-manager-index（不随仓库同步）。切换后需在下方“重建语义索引”。')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('vault', 'Obsidian 仓库内（.bib-manager/，默认）')
+          .addOption('local', '本地 ~/.bib-manager-index')
+          .setValue(this.plugin.settings.semanticIndexLocation || 'vault')
+          .onChange(async (value) => {
+            const next = value === 'local' ? 'local' : 'vault';
+            if (next === this.plugin.settings.semanticIndexLocation) return;
+            this.plugin.settings.semanticIndexLocation = next;
+            await this.plugin.saveSettings();
+            new Notice('已切换语义索引存储位置，请在下方点击“重建语义索引”。');
           })
       );
 

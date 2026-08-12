@@ -55,18 +55,49 @@ describe('shouldIndexPath', () => {
     expect(shouldIndexPath('proj/bower_components/foo.md', vaultRoot)).toBe(false);
   });
 
-  test('skips files inside a symlinked folder', () => {
+  test('indexes files inside a symlinked folder by default (followSymlinks)', () => {
     const projectDir = path.join(tmpRoot, 'external-project');
     fs.mkdirSync(path.join(projectDir, 'node_modules', 'pkg'), { recursive: true });
     fs.writeFileSync(path.join(projectDir, 'README.md'), 'proj readme');
     fs.writeFileSync(path.join(projectDir, 'node_modules', 'pkg', 'README.md'), 'pkg readme');
+    fs.mkdirSync(path.join(projectDir, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'sub', 'notes.md'), 'sub notes');
 
     const link = path.join(vaultRoot, 'linked-project');
     fs.symlinkSync(projectDir, link, 'dir');
 
-    expect(shouldIndexPath('linked-project/README.md', vaultRoot)).toBe(false);
+    expect(shouldIndexPath('linked-project/README.md', vaultRoot)).toBe(true);
+    expect(shouldIndexPath('linked-project/sub/notes.md', vaultRoot)).toBe(true);
+    // node_modules is still excluded via the folder-name list.
     expect(shouldIndexPath('linked-project/node_modules/pkg/README.md', vaultRoot)).toBe(false);
-    expect(shouldIndexPath('linked-project/sub/notes.md', vaultRoot)).toBe(false);
+  });
+
+  test('skips files inside a symlinked folder when followSymlinks is off', () => {
+    const projectDir = path.join(tmpRoot, 'external-project');
+    fs.mkdirSync(path.join(projectDir, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'README.md'), 'proj readme');
+    fs.mkdirSync(path.join(projectDir, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'sub', 'notes.md'), 'sub notes');
+
+    const link = path.join(vaultRoot, 'linked-project');
+    fs.symlinkSync(projectDir, link, 'dir');
+
+    const opts = { followSymlinks: false, excludeFolders: [] };
+    expect(shouldIndexPath('linked-project/README.md', vaultRoot, opts)).toBe(false);
+    expect(shouldIndexPath('linked-project/sub/notes.md', vaultRoot, opts)).toBe(false);
+  });
+
+  test('configurable exclude folders override the defaults', () => {
+    // Defaults exclude node_modules...
+    expect(shouldIndexPath('proj/node_modules/pkg/README.md', vaultRoot)).toBe(false);
+    // ...and a custom list can exclude other folders.
+    expect(
+      shouldIndexPath('proj/src/x.md', vaultRoot, { followSymlinks: true, excludeFolders: ['src'] })
+    ).toBe(false);
+    // An empty list disables the folder-name exclusions.
+    expect(
+      shouldIndexPath('proj/node_modules/pkg/README.md', vaultRoot, { followSymlinks: true, excludeFolders: [] })
+    ).toBe(true);
   });
 
   test('still indexes files in a real folder with same name as the symlink', () => {
@@ -78,14 +109,17 @@ describe('shouldIndexPath', () => {
     expect(shouldIndexPath('real-project/sub/other.md', vaultRoot)).toBe(true);
   });
 
-  test('skips a file that is itself a symlink', () => {
+  test('a file that is itself a symlink is indexed by default, skipped when followSymlinks is off', () => {
     fs.mkdirSync(path.join(vaultRoot, 'notes'), { recursive: true });
     const target = path.join(tmpRoot, 'external.md');
     fs.writeFileSync(target, 'external content');
     const link = path.join(vaultRoot, 'notes', 'link.md');
     fs.symlinkSync(target, link, 'file');
 
-    expect(shouldIndexPath('notes/link.md', vaultRoot)).toBe(false);
+    expect(shouldIndexPath('notes/link.md', vaultRoot)).toBe(true);
+    expect(
+      shouldIndexPath('notes/link.md', vaultRoot, { followSymlinks: false, excludeFolders: [] })
+    ).toBe(false);
   });
 
   test('sibling paths outside the symlink remain indexed', () => {
@@ -99,7 +133,10 @@ describe('shouldIndexPath', () => {
     fs.writeFileSync(path.join(vaultRoot, 'vault-notes', 'a.md'), 'vault note');
 
     expect(shouldIndexPath('vault-notes/a.md', vaultRoot)).toBe(true);
-    expect(shouldIndexPath('linked-project/README.md', vaultRoot)).toBe(false);
+    expect(shouldIndexPath('linked-project/README.md', vaultRoot)).toBe(true);
+    expect(
+      shouldIndexPath('linked-project/README.md', vaultRoot, { followSymlinks: false, excludeFolders: [] })
+    ).toBe(false);
   });
 });
 
