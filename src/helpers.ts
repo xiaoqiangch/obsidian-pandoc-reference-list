@@ -17,6 +17,28 @@ export function getVaultRoot() {
  * never evict, truncate, or race them (which previously caused repeated
  * full rebuilds on every restart).
  */
+/**
+ * True when an API URL points at a loopback / local-machine address (localhost,
+ * 127.0.0.1, ::1, 0.0.0.0, or a .local/.lan host). Local Docker services
+ * (e.g. jina-embeddings / jina-reranker) are served this way and usually need
+ * no API key.
+ */
+export function isLocalApiUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      host === '0.0.0.0' ||
+      host.endsWith('.local') ||
+      host.endsWith('.lan')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function getCacheRoot(): string {
   const vaultRoot = getVaultRoot();
   const hash = createHash('md5').update(vaultRoot).digest('hex').slice(0, 12);

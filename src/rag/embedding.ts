@@ -11,17 +11,17 @@ const EMBED_TIMEOUT_MS = 120000;
 const BATCH_SIZE = 32;
 
 /**
- * Embed a list of texts via a text-embedding API (Volcengine Ark / OpenAI
- * compatible /embeddings endpoint). Inputs are sent in batches; each request
- * returns one embedding per input item.
+ * Embed a list of texts via a text-embedding API (OpenAI-compatible
+ * /embeddings endpoint). Works with Volcengine Ark and with local Docker
+ * services (jina-embeddings-v3/v5, ...) — the latter usually expose the same
+ * endpoint without authentication, so `apiKey` is optional and the
+ * Authorization header is only sent when a key is configured.
+ * Inputs are sent in batches; each request returns one embedding per item.
  */
 export async function embedTexts(
   texts: string[],
   settings: EmbeddingSettings
 ): Promise<number[][]> {
-  if (!settings.apiKey) {
-    throw new Error('语义嵌入 API Key 未配置，请在设置中填写火山方舟 Embedding API Key。');
-  }
   if (texts.length === 0) return [];
 
   const out: number[][] = [];
@@ -42,16 +42,15 @@ async function embedBatch(
 ): Promise<number[][]> {
   const url = settings.apiUrl.replace(/\/+$/, '') + '/embeddings';
   const body = JSON.stringify({ model: settings.model, input: batch });
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (settings.apiKey) headers['Authorization'] = `Bearer ${settings.apiKey}`;
 
   let response: RequestUrlResponse;
   try {
     response = await requestUrlWithTimeout({
       url,
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${settings.apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body,
     });
   } catch (e: any) {

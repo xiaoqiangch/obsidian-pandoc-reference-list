@@ -68,7 +68,10 @@ export class SemanticIndexer {
   }
 
   get enabled(): boolean {
-    return this.settings.enabled && !!this.settings.apiKey;
+    // An API key is not strictly required: local Docker embedding services
+    // (jina-embeddings-v5-omni, ...) expose the same OpenAI-compatible
+    // endpoint with no authentication.
+    return this.settings.enabled;
   }
 
   private embedSettings(): EmbeddingSettings {

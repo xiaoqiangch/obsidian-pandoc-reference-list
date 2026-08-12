@@ -3,6 +3,7 @@ import which from 'which';
 
 import { t } from './lang/helpers';
 import { testEmbeddingConnection } from './rag/embedding';
+import { testRerankConnection } from './rag/rerank';
 import ReferenceList from './main';
 import ReactDOM from 'react-dom';
 import React from 'react';
@@ -43,13 +44,19 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   ragSnippetLength: 180,
   ragMinTermCoverage: 1,
   enableNativeSemantic: false,
-  semanticEmbedApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+  semanticEmbedApiUrl: 'http://localhost:8080/v1',
   semanticEmbedApiKey: '',
-  semanticEmbedModel: 'doubao-embedding-large-text-240915',
+  semanticEmbedModel: 'jina-embeddings-v5-omni',
   semanticChunkSize: 1200,
   semanticChunkOverlap: 120,
   semanticTopK: 20,
   semanticMinScore: 0.3,
+  rerankEnabled: true,
+  rerankApiUrl: 'http://localhost:8080/v1',
+  rerankModel: 'jina-reranker-v3',
+  rerankTopN: 20,
+  rerankMinScore: 0,
+  rerankCandidateCount: 30,
 };
 
 export interface ZoteroGroup {
@@ -101,6 +108,12 @@ export interface ReferenceListSettings {
   semanticChunkOverlap?: number;
   semanticTopK?: number;
   semanticMinScore?: number;
+  rerankEnabled?: boolean;
+  rerankApiUrl?: string;
+  rerankModel?: string;
+  rerankTopN?: number;
+  rerankMinScore?: number;
+  rerankCandidateCount?: number;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -653,7 +666,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('原生语义检索（向量嵌入）')
-      .setDesc('启用后，检索结果会额外叠加“语义命中”分组：使用火山方舟文本嵌入模型对全库 markdown 分块建立向量索引，可按语义而非仅关键词匹配。')
+      .setDesc('启用后，检索结果会额外叠加“语义命中”分组：对全库 markdown 分块建立向量索引，可按语义而非仅关键词匹配。默认指向本地 Docker 的 jina-embeddings-v5-omni（OpenAI 兼容 /embeddings 接口）。')
       .addToggle((toggle) =>
         toggle
           .setValue(!!this.plugin.settings.enableNativeSemantic)
@@ -668,10 +681,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('嵌入 API 地址')
-      .setDesc('火山方舟标准 API 地址（Embedding 需使用 /api/v3 而非套餐 /api/plan/v3）。')
+      .setDesc('OpenAI 兼容嵌入接口基地址。本地 Docker：http://localhost:8080/v1；火山方舟：https://ark.cn-beijing.volces.com/api/v3（Embedding 需 /api/v3 而非套餐 /api/plan/v3）。')
       .addText((text) =>
         text
-          .setPlaceholder('https://ark.cn-beijing.volces.com/api/v3')
+          .setPlaceholder('http://localhost:8080/v1')
           .setValue(this.plugin.settings.semanticEmbedApiUrl || '')
           .onChange((value) => {
             this.plugin.settings.semanticEmbedApiUrl = value;
@@ -681,10 +694,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('嵌入 API Key')
-      .setDesc('火山方舟 API Key（需开通文本向量化模型；注意套餐 plan key 不支持 Embedding）。')
+      .setDesc('云端服务需要（如火山方舟）；本地 Docker 服务可留空。')
       .addText((text) =>
         text
-          .setPlaceholder('ark 标准 API Key')
+          .setPlaceholder('本地 Docker 可留空')
           .setValue(this.plugin.settings.semanticEmbedApiKey || '')
           .onChange((value) => {
             this.plugin.settings.semanticEmbedApiKey = value.trim();
@@ -694,9 +707,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('嵌入模型')
+      .setDesc('本地 Docker：jina-embeddings-v5-omni；火山方舟：doubao-embedding-large-text-240915 等。')
       .addText((text) =>
         text
-          .setPlaceholder('doubao-embedding-large-text-240915')
+          .setPlaceholder('jina-embeddings-v5-omni')
           .setValue(this.plugin.settings.semanticEmbedModel || '')
           .onChange((value) => {
             this.plugin.settings.semanticEmbedModel = value.trim();
@@ -814,7 +828,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       } else {
         semanticStatus.descEl.createDiv({
           text: `已索引 ${idx.index.docCount} 个文件 / ${idx.index.chunkCount} 个分块${
-            idx.enabled ? '' : '（未启用或未配置 Key）'
+            idx.enabled ? '' : '（语义检索未启用）'
           }${idx.failedCount > 0 ? `（上次构建跳过 ${idx.failedCount} 个失败文件）` : ''}。`,
         });
         if (idx.pendingCount >= 0) {
@@ -837,6 +851,91 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       window.clearInterval(this.semanticStatusTimer);
     }
     this.semanticStatusTimer = window.setInterval(renderSemanticStatus, 500);
+
+    new Setting(containerEl)
+      .setName('交叉编码重排序（Rerank）')
+      .setDesc('启用后，检索时把全文命中与语义命中的候选片段合并，交给交叉编码重排模型（默认本地 Docker 的 jina-reranker-v3）统一打分排序，输出“重排序命中”分组。重排服务不可用时会自动回退到普通全文/语义分组。')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(!!this.plugin.settings.rerankEnabled)
+          .onChange((value) => {
+            this.plugin.settings.rerankEnabled = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('重排序 API 地址')
+      .setDesc('本地 Docker：http://localhost:8080/v1（自动追加 /rerank 路径）。')
+      .addText((text) =>
+        text
+          .setPlaceholder('http://localhost:8080/v1')
+          .setValue(this.plugin.settings.rerankApiUrl || '')
+          .onChange((value) => {
+            this.plugin.settings.rerankApiUrl = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('重排序模型')
+      .addText((text) =>
+        text
+          .setPlaceholder('jina-reranker-v3')
+          .setValue(this.plugin.settings.rerankModel || '')
+          .onChange((value) => {
+            this.plugin.settings.rerankModel = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('重排序候选数')
+      .setDesc('每次检索交给重排模型的候选片段数量（全文 + 语义合并去重后取前 N）。')
+      .addSlider((slider) =>
+        slider
+          .setLimits(10, 80, 5)
+          .setValue(this.plugin.settings.rerankCandidateCount || 30)
+          .onChange((value) => {
+            this.plugin.settings.rerankCandidateCount = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('重排序最低得分')
+      .setDesc('过滤掉重排得分低于此值的片段（0 = 不过滤）。')
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 0.9, 0.05)
+          .setValue(this.plugin.settings.rerankMinScore ?? 0)
+          .onChange((value) => {
+            this.plugin.settings.rerankMinScore = value;
+            this.plugin.saveSettings();
+          })
+          .setDynamicTooltip()
+      );
+
+    const rerankTest = new Setting(containerEl).setName('重排序连接测试');
+    rerankTest.addButton((button) =>
+      button.setButtonText('测试重排序').onClick(async () => {
+        try {
+          const n = await testRerankConnection(
+            '数字经济的增长效应',
+            ['数字经济对区域增长的影响研究。', '二十四桥明月夜，玉人何处教吹箫。', 'climate change and agriculture'],
+            {
+              apiUrl: this.plugin.settings.rerankApiUrl || '',
+              model: this.plugin.settings.rerankModel || '',
+              topN: this.plugin.settings.rerankTopN || 20,
+              minScore: 0,
+            }
+          );
+          new Notice(`重排序连接正常（返回 ${n} 条）`);
+        } catch (e: any) {
+          new Notice(`连接失败：${e.message}`);
+        }
+      })
+    );
 
     new Setting(containerEl)
       .setName('重建索引')

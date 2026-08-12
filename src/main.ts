@@ -27,7 +27,7 @@ import {
 } from './settings';
 import { TooltipManager } from './tooltip';
 import { ReferenceListView, viewType } from './view';
-import { PromiseCapability, fixPath, getVaultRoot, debugLog } from './helpers';
+import { PromiseCapability, fixPath, getVaultRoot, debugLog, isLocalApiUrl } from './helpers';
 import path from 'path';
 import { BibManager } from './bib/bibManager';
 import { CiteSuggest } from './citeSuggest/citeSuggest';
@@ -473,8 +473,8 @@ export default class ReferenceList extends Plugin {
 
   async initSemanticIndex(): Promise<void> {
     if (!this.semanticIndexer.enabled) return;
-    if (!this.settings.semanticEmbedApiKey) {
-      new Notice('语义检索：请先在设置中配置火山方舟 Embedding API Key。');
+    if (!this.settings.semanticEmbedApiKey && !isLocalApiUrl(this.settings.semanticEmbedApiUrl || '')) {
+      new Notice('语义检索：请先在设置中配置 Embedding API Key（本地 Docker 服务可留空）。');
       return;
     }
     // Manual-only indexing: on startup we only try to load a persisted index.

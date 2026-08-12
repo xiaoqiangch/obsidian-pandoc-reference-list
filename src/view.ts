@@ -7,6 +7,8 @@ import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
 import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, RagPosition } from './rag/retrieval';
+import { rerankTexts } from './rag/rerank';
+import { parseQuery } from './rag/tokenizer';
 import { LayoutBlock } from './rag/layout';
 import { SemanticVectorHit } from './rag/vectorIndex';
 
@@ -426,6 +428,14 @@ export class ReferenceListView extends ItemView {
       return;
     }
 
+    // Cross-encoder reranking (local Docker jina-reranker-v3): merge the
+    // full-text + semantic candidates and re-rank them. Falls back to the
+    // plain full-text / semantic groups when disabled or on any failure.
+    if (this.plugin.settings.rerankEnabled && this.plugin.settings.rerankApiUrl) {
+      const ok = await this.renderRerankedResults(container, scope);
+      if (ok) return;
+    }
+
     const rag = this.plugin.ragIndexer;
     if (rag.index.docCount === 0) {
       container.createDiv({ cls: 'pane-empty', text: t('RAG index is being built...') });
@@ -504,6 +514,215 @@ export class ReferenceListView extends ItemView {
     if (this.plugin.settings.enableNativeSemantic) {
       await this.renderNativeSemanticResults(container, query, scope);
     }
+  }
+
+  /** Terms used to locate positions / snippets: latin words + full CJK runs. */
+  private queryTerms(query: string): string[] {
+    const { latin, cjkRuns } = parseQuery(query);
+    return [...latin, ...cjkRuns];
+  }
+
+  /**
+   * Merged cross-encoder rerank of full-text + semantic candidates against the
+   * local Docker jina-reranker-v3 service. Returns true when the "重排序命中"
+   * group was rendered (in which case the caller should skip the plain groups);
+   * returns false on any failure so the caller falls back to its default path.
+   */
+  private async renderRerankedResults(
+    container: HTMLElement,
+    scope: 'library' | 'vault'
+  ): Promise<boolean> {
+    const settings = this.plugin.settings;
+    const query = this.searchQuery.trim();
+    if (!query) return false;
+
+    const rag = this.plugin.ragIndexer;
+    if (!rag || rag.index.docCount === 0) return false;
+
+    const terms = this.queryTerms(query);
+    const vaultRoot = getVaultRoot();
+    const outputPath = settings.convertOutputPath || 'literature';
+    const snippetLen = settings.ragSnippetLength || 180;
+    const candidateCount = settings.rerankCandidateCount || 30;
+
+    interface Candidate {
+      path: string;
+      title: string;
+      citekey?: string;
+      literature: boolean;
+      line: number;
+      snippet: string;
+      page?: number;
+      bbox?: number[] | null;
+    }
+
+    const candidates: Candidate[] = [];
+    const seen = new Set<string>();
+
+    const addCandidate = (c: Candidate) => {
+      const key = `${c.path}|${c.line}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push(c);
+    };
+
+    // Full-text (BM25) candidates: best matching position per document.
+    const ftHits = rag.search(
+      query,
+      candidateCount,
+      settings.ragMinTermCoverage ?? 1
+    );
+    for (const hit of ftHits) {
+      if (scope === 'library' && !hit.doc.literature) continue;
+      let content = '';
+      try {
+        content = await this.readVaultText(hit.doc.path);
+      } catch {
+        continue;
+      }
+      if (!content) continue;
+      const layout =
+        hit.doc.literature && hit.doc.citekey
+          ? readLiteratureLayout(vaultRoot, outputPath, hit.doc.citekey)
+          : null;
+      const positions = findRagPositions(content, terms, layout, snippetLen);
+      if (positions.length === 0) continue;
+      const p = positions[0];
+      addCandidate({
+        path: hit.doc.path,
+        title: hit.doc.title || hit.doc.path,
+        citekey: hit.doc.literature ? hit.doc.citekey : undefined,
+        literature: hit.doc.literature,
+        line: p.line,
+        snippet: p.snippet,
+        page: p.page,
+        bbox: p.bbox,
+      });
+    }
+
+    // Semantic (vector) candidates.
+    const idx = this.plugin.semanticIndexer;
+    if (idx?.enabled && idx.index.chunkCount > 0) {
+      let vecHits: SemanticVectorHit[] = [];
+      try {
+        vecHits = await idx.search(
+          query,
+          settings.semanticTopK || 20,
+          settings.semanticMinScore ?? 0
+        );
+      } catch (e: any) {
+        debugLog('View', 'Semantic search failed during rerank', { error: e.message });
+      }
+      if (scope === 'library') vecHits = vecHits.filter((h) => h.literature);
+      for (const h of vecHits) {
+        let content = '';
+        try {
+          content = await this.readVaultText(h.path);
+        } catch {
+          continue;
+        }
+        if (!content) continue;
+        const lines = content.split('\n');
+        const start = Math.max(0, h.startLine - 1);
+        const end = Math.min(lines.length, h.endLine);
+        const snippet = lines.slice(start, end).join('\n').trim() || '...';
+        let page: number | undefined;
+        let bbox: number[] | null = null;
+        if (h.citekey) {
+          const layout = readLiteratureLayout(vaultRoot, outputPath, h.citekey);
+          if (layout) {
+            const blocks = findLayoutBlocksByLines(layout, h.startLine, h.endLine);
+            if (blocks.length > 0) {
+              page = blocks[0].page;
+              bbox = blocks[0].bbox;
+            }
+          }
+        }
+        addCandidate({
+          path: h.path,
+          title: h.title || h.path,
+          citekey: h.citekey,
+          literature: h.literature,
+          line: h.startLine,
+          snippet,
+          page,
+          bbox,
+        });
+      }
+    }
+
+    if (candidates.length === 0) return false;
+
+    // Rerank the candidate snippets.
+    let reranked: { c: Candidate; score: number }[];
+    try {
+      const results = await rerankTexts(
+        query,
+        candidates.map((c) => c.snippet),
+        {
+          apiUrl: settings.rerankApiUrl || '',
+          model: settings.rerankModel || '',
+          topN: settings.rerankTopN || 20,
+          minScore: settings.rerankMinScore ?? 0,
+        }
+      );
+      reranked = results
+        .filter(
+          (r) =>
+            r.index >= 0 &&
+            r.index < candidates.length &&
+            r.score >= (settings.rerankMinScore ?? 0)
+        )
+        .map((r) => ({ c: candidates[r.index], score: r.score }));
+    } catch (e: any) {
+      debugLog('View', 'Rerank failed, falling back to plain groups', { error: e.message });
+      return false;
+    }
+    if (reranked.length === 0) return false;
+
+    // Render one merged group, ordered by rerank score, grouped by document.
+    const group = container.createDiv({ cls: 'pwc-rag-group' });
+    group.setAttr('data-rag-group', 'rerank');
+    group.createDiv({
+      cls: 'pwc-rag-group-title',
+      text: `重排序命中 · 共 ${reranked.length} 处`,
+    });
+    const resultContainer = group.createDiv({ cls: 'pwc-rag-files' });
+
+    const byDoc = new Map<string, typeof reranked>();
+    for (const r of reranked) {
+      const list = byDoc.get(r.c.path) || [];
+      list.push(r);
+      byDoc.set(r.c.path, list);
+    }
+
+    for (const [docPath, list] of byDoc) {
+      const first = list[0].c;
+      const layout = first.citekey
+        ? readLiteratureLayout(vaultRoot, outputPath, first.citekey)
+        : null;
+      const entries = list.map((r) => ({
+        line: r.c.line,
+        snippet: r.c.snippet,
+        page: r.c.page,
+        bbox: r.c.bbox,
+        similarity: r.score,
+      }));
+      if (entries.length === 0) continue;
+      this.renderRagDocGroup(
+        resultContainer,
+        {
+          title: first.title || docPath,
+          path: docPath,
+          citekey: first.citekey,
+          layout,
+          hint: first.literature,
+        },
+        entries,
+        terms
+      );
+    }
+    return true;
   }
 
   /**
@@ -705,6 +924,7 @@ export class ReferenceListView extends ItemView {
     const groups = [
       { key: 'top', label: t('Back to top') },
       { key: 'meta', label: t('Reference entries') },
+      { key: 'rerank', label: '重排序命中' },
       { key: 'fulltext', label: t('Full-text hits') },
       { key: 'semantic', label: '语义命中' },
     ];
