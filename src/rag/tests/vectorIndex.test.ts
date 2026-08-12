@@ -34,7 +34,42 @@ describe('SemanticVectorIndex', () => {
     expect(hits.length).toBe(2);
     expect(hits[0].path).toBe('a.md');
     expect(hits[0].startLine).toBe(1);
+    expect(hits[0].similarity).toBeGreaterThan(0);
     expect(hits[1].path).toBe('b.md');
+  });
+
+  test('filters hits below the min-similarity threshold', () => {
+    const idx = new SemanticVectorIndex();
+    idx.upsertDoc(
+      'a.md',
+      '文档A',
+      false,
+      undefined,
+      1,
+      10,
+      [{ startLine: 1, endLine: 2, text: '关于莱茵河的军事论述' }],
+      [unit(16, 3)]
+    );
+    idx.upsertDoc(
+      'b.md',
+      '文档B',
+      false,
+      undefined,
+      1,
+      10,
+      [{ startLine: 1, endLine: 2, text: '关于金融市场的分析' }],
+      [unit(16, 12)]
+    );
+
+    // Query targets a.md strongly; with a strict threshold only a.md survives.
+    const hits = idx.search(unit(16, 3), 5, 0.5);
+    expect(hits.length).toBe(1);
+    expect(hits[0].path).toBe('a.md');
+    expect(hits[0].similarity).toBeGreaterThanOrEqual(0.5);
+
+    // With no threshold both docs come back.
+    const all = idx.search(unit(16, 3), 5);
+    expect(all.length).toBe(2);
   });
 
   test('persists and restores vectors via serialize/load', () => {

@@ -264,9 +264,10 @@ export class SemanticIndexer {
   }
 
   /** Embed the query (cached) and return the top chunk hits. */
-  async search(query: string, topK?: number): Promise<SemanticVectorHit[]> {
+  async search(query: string, topK?: number, minSimilarity?: number): Promise<SemanticVectorHit[]> {
     if (!this.enabled || this.index.chunkCount === 0) return [];
     const k = topK ?? this.settings.topK ?? 20;
+    const min = minSimilarity ?? 0;
 
     let qVec = this.lastQueryCache?.q === query ? this.lastQueryCache.vec : null;
     if (!qVec) {
@@ -275,7 +276,7 @@ export class SemanticIndexer {
       if (!qVec) return [];
       this.lastQueryCache = { q: query, vec: qVec };
     }
-    return this.index.search(qVec, k);
+    return this.index.search(qVec, k, min);
   }
 
   docKeys(): string[] {

@@ -48,6 +48,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   semanticChunkSize: 1200,
   semanticChunkOverlap: 120,
   semanticTopK: 20,
+  semanticMinScore: 0.3,
 };
 
 export interface ZoteroGroup {
@@ -97,6 +98,7 @@ export interface ReferenceListSettings {
   semanticChunkSize?: number;
   semanticChunkOverlap?: number;
   semanticTopK?: number;
+  semanticMinScore?: number;
 }
 
 export class ReferenceListSettingsTab extends PluginSettingTab {
@@ -724,6 +726,22 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             this.plugin.settings.semanticTopK = value;
             this.plugin.saveSettings();
           })
+      );
+
+    new Setting(containerEl)
+      .setName('最低相似度阈值')
+      .setDesc(
+        '过滤掉低于此相似度的语义命中（0 表示不过滤）。用于剔除与检索词不相关的噪声结果。'
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 0.8, 0.05)
+          .setValue(this.plugin.settings.semanticMinScore ?? 0.3)
+          .onChange((value) => {
+            this.plugin.settings.semanticMinScore = value;
+            this.plugin.saveSettings();
+          })
+          .setDynamicTooltip()
       );
 
     const semanticStatus = new Setting(containerEl).setName('语义索引状态');

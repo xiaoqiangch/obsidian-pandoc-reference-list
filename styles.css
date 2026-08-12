@@ -927,6 +927,17 @@ body {
     color: var(--text-muted);
 }
 
+/* 语义命中相似度徽标 */
+.pwc-rag-match-sim {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-accent);
+    background: rgba(var(--color-accent-rgb), 0.12);
+    border-radius: var(--radius-s, 4px);
+    padding: 1px 5px;
+    line-height: 1.4;
+}
+
 /* RAG 全文命中：仿 Obsidian 原生搜索结果样式，但完全自包含（不依赖核心
    tree-item/search-result 类），折叠用原生 <details>/<summary> 保证可用 */
 .pwc-rag-files {

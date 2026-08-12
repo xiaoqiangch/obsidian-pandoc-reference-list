@@ -21,6 +21,8 @@ export interface SemanticVectorHit {
   startLine: number;
   endLine: number;
   score: number;
+  /** Normalized similarity in [0,1] (score scaled by the int8 dot-product max). */
+  similarity: number;
 }
 
 /** Unit-normalize a dense vector. */
@@ -117,10 +119,14 @@ export class SemanticVectorIndex {
     return this.docs.delete(path);
   }
 
-  search(queryVec: number[], topK: number): SemanticVectorHit[] {
+  search(queryVec: number[], topK: number, minSimilarity = 0): SemanticVectorHit[] {
     const dim = this.dimension;
     if (!dim || this.docs.size === 0) return [];
     const q = quantize(normalize(queryVec));
+
+    // int8 dot product max ≈ 127*127 per the normalization; scale it so the
+    // returned "similarity" approximates cosine similarity in [0,1].
+    const scoreMax = 127 * 127;
 
     const scored: { score: number; path: string; startLine: number; endLine: number }[] = [];
     for (const [path, d] of this.docs) {
@@ -135,18 +141,22 @@ export class SemanticVectorIndex {
     }
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK).map((r) => {
-      const meta = this.docs.get(r.path)!.meta;
-      return {
-        path: r.path,
-        title: meta.title,
-        citekey: meta.citekey,
-        literature: meta.literature,
-        startLine: r.startLine,
-        endLine: r.endLine,
-        score: r.score,
-      };
-    });
+    return scored
+      .filter((r) => r.score / scoreMax >= minSimilarity)
+      .slice(0, topK)
+      .map((r) => {
+        const meta = this.docs.get(r.path)!.meta;
+        return {
+          path: r.path,
+          title: meta.title,
+          citekey: meta.citekey,
+          literature: meta.literature,
+          startLine: r.startLine,
+          endLine: r.endLine,
+          score: r.score,
+          similarity: Math.max(0, Math.min(1, r.score / scoreMax)),
+        };
+      });
   }
 
   toJSON(): { version: number; model: string; dimension: number; docOrder: string[]; docs: SemanticDocMeta[] } {

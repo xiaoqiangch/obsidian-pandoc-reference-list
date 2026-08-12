@@ -513,7 +513,7 @@ export class ReferenceListView extends ItemView {
   renderRagDocGroup(
     parent: HTMLElement,
     doc: { title: string; path: string; citekey?: string; layout: LayoutBlock[] | null; hint?: boolean },
-    entries: { line: number; snippet: string; page?: number; bbox?: number[] | null }[],
+    entries: { line: number; snippet: string; page?: number; bbox?: number[] | null; similarity?: number }[],
     terms: string[]
   ) {
     const details = parent.createEl('details', { cls: 'pwc-rag-file' });
@@ -535,6 +535,12 @@ export class ReferenceListView extends ItemView {
       this.appendHighlighted(textEl, entry.snippet, terms);
 
       const actions = match.createDiv({ cls: 'pwc-rag-card-actions' });
+      if (entry.similarity !== undefined) {
+        const sim = Math.round(entry.similarity * 100);
+        const simEl = actions.createDiv({ cls: 'pwc-rag-match-sim' });
+        simEl.setText(`${sim}%`);
+        simEl.setAttr('aria-label', `相似度 ${sim}%`);
+      }
       this.addIconAction(actions, 'file-text', `在 MD 中定位 第${entry.line}行`, () => {
         this.openNoteAtLine(doc.path, entry.line);
       });
@@ -561,7 +567,11 @@ export class ReferenceListView extends ItemView {
 
     let vecHits: SemanticVectorHit[];
     try {
-      vecHits = await idx.search(query, this.plugin.settings.semanticTopK || 20);
+      vecHits = await idx.search(
+        query,
+        this.plugin.settings.semanticTopK || 20,
+        this.plugin.settings.semanticMinScore ?? 0
+      );
     } catch (e: any) {
       debugLog('View', 'Semantic search failed', { error: e.message });
       return;
@@ -620,6 +630,7 @@ export class ReferenceListView extends ItemView {
             snippet: snippet.length > snippetLen ? snippet.slice(0, snippetLen) + '…' : snippet,
             page,
             bbox,
+            similarity: h.similarity,
           };
         })
         .filter((e) => e.snippet && e.snippet !== '...');
