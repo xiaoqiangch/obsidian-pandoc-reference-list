@@ -809,6 +809,13 @@ body {
     word-break: break-all;
 }
 
+.pwc-semantic-status-hint {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 4px;
+    line-height: 1.4;
+}
+
 .pwc-conversion-status-completed {
     color: var(--text-success, #4caf50);
 }

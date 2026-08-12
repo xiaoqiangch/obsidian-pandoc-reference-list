@@ -164,9 +164,8 @@ export default class ReferenceList extends Plugin {
         if (this.settings.enableRagSearch) {
           this.ragIndexer.incrementalUpdate().catch(() => {});
         }
-        if (this.semanticIndexer.enabled) {
-          this.semanticIndexer.incrementalUpdate().catch(() => {});
-        }
+        // Semantic (embedding) indexing is manual-only: never auto-update on
+        // file events to avoid surprise embedding API calls / rebuilds.
       },
       5000,
       false
@@ -235,6 +234,14 @@ export default class ReferenceList extends Plugin {
       name: '重建语义索引',
       callback: () => {
         this.rebuildSemanticIndex();
+      },
+    });
+
+    this.addCommand({
+      id: 'update-semantic-index',
+      name: '增量更新语义索引',
+      callback: () => {
+        this.updateSemanticIndex();
       },
     });
 
@@ -470,23 +477,18 @@ export default class ReferenceList extends Plugin {
       new Notice('语义检索：请先在设置中配置火山方舟 Embedding API Key。');
       return;
     }
+    // Manual-only indexing: on startup we only try to load a persisted index.
+    // We NEVER build or update embeddings automatically — do that from the
+    // settings "重建语义索引" / "增量更新" buttons or the command palette.
     try {
       const loaded = await this.semanticIndexer.loadCache();
-      if (loaded) {
-        await this.semanticIndexer.incrementalUpdate();
-      } else {
-        this.lastSemanticMilestone = 0;
-        new Notice('正在构建语义索引（首次全库嵌入，后台进行，约需数分钟）...');
-        await this.semanticIndexer.buildAll((p) => this.reportSemanticProgress(p));
-        new Notice('语义索引构建完成');
+      debugLog('Main', 'Semantic index cache loaded', { loaded });
+      if (!loaded) {
+        new Notice('语义索引缓存不存在，请在设置中点击“重建语义索引”手动构建。');
       }
-      debugLog('Main', 'Semantic index ready', {
-        docs: this.semanticIndexer.index.docCount,
-        chunks: this.semanticIndexer.index.chunkCount,
-      });
     } catch (e: any) {
-      debugLog('Main', 'Semantic index initialization failed', { error: e.message });
-      new Notice(`语义索引构建失败：${e.message}`);
+      debugLog('Main', 'Semantic index load failed', { error: e.message });
+      new Notice('语义索引缓存加载失败，请在设置中手动重建。');
     }
   }
 
@@ -502,6 +504,21 @@ export default class ReferenceList extends Plugin {
       new Notice('语义索引重建完成');
     } catch (e: any) {
       new Notice(`语义索引重建失败：${e.message}`);
+    }
+  }
+
+  async updateSemanticIndex(): Promise<void> {
+    if (!this.semanticIndexer.enabled) {
+      new Notice('语义检索未启用，请在设置中开启并配置 API Key。');
+      return;
+    }
+    this.lastSemanticMilestone = 0;
+    new Notice('开始增量更新语义索引...');
+    try {
+      await this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p));
+      new Notice('语义索引增量更新完成');
+    } catch (e: any) {
+      new Notice(`语义索引增量更新失败：${e.message}`);
     }
   }
 
