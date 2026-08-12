@@ -41,6 +41,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   mineruModelVersion: 'vlm',
   enableRagSearch: true,
   ragSnippetLength: 180,
+  ragMinTermCoverage: 1,
   enableNativeSemantic: false,
   semanticEmbedApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
   semanticEmbedApiKey: '',
@@ -91,6 +92,7 @@ export interface ReferenceListSettings {
   mineruModelVersion: string;
   enableRagSearch?: boolean;
   ragSnippetLength?: number;
+  ragMinTermCoverage?: number;
   enableNativeSemantic?: boolean;
   semanticEmbedApiUrl?: string;
   semanticEmbedApiKey?: string;
@@ -828,6 +830,22 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             this.plugin.settings.ragSnippetLength = value;
             this.plugin.saveSettings();
           })
+      );
+
+    new Setting(containerEl)
+      .setName('关键词命中覆盖率')
+      .setDesc(
+        '命中结果必须包含的查询词比例（1 = 全部关键词都需命中，过滤掉只沾边一个词的结果，如“哈德良”不再命中“哈德斯”）。'
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.5, 1, 0.05)
+          .setValue(this.plugin.settings.ragMinTermCoverage ?? 1)
+          .onChange((value) => {
+            this.plugin.settings.ragMinTermCoverage = value;
+            this.plugin.saveSettings();
+          })
+          .setDynamicTooltip()
       );
   }
 }

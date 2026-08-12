@@ -432,7 +432,7 @@ export class ReferenceListView extends ItemView {
       return;
     }
 
-    const hits = rag.search(query, 60);
+    const hits = rag.search(query, 60, this.plugin.settings.ragMinTermCoverage ?? 1);
     const relevant = scope === 'library' ? hits.filter((h) => h.doc.literature) : hits;
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });

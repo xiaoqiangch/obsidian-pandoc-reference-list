@@ -30,6 +30,37 @@ describe('Bm25Index', () => {
     expect(hits.length).toBe(1);
   });
 
+  test('default coverage filters partial CJK bigram collisions', () => {
+    const idx = new Bm25Index();
+    // 哈德良 -> bigrams [哈德, 德良]; 哈德斯 -> [哈德, 德斯]
+    idx.addDoc('hadrian.md', '哈德良是罗马皇帝。', {});
+    idx.addDoc('hades.md', '哈德斯是冥界之神。', {});
+
+    const hits = idx.search('哈德良', 10);
+    expect(hits.length).toBe(1);
+    expect(hits[0].doc.path).toBe('hadrian.md');
+  });
+
+  test('multiple keywords require all terms by default (AND)', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', 'digital economy growth model', {});
+    idx.addDoc('b.md', 'digital art exhibition', {});
+    idx.addDoc('c.md', 'economy of scale', {});
+
+    const hits = idx.search('digital economy', 10);
+    expect(hits.length).toBe(1);
+    expect(hits[0].doc.path).toBe('a.md');
+  });
+
+  test('lower minTermCoverage relaxes the match', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', 'digital economy growth model', {});
+    idx.addDoc('b.md', 'digital art exhibition', {});
+
+    const hits = idx.search('digital economy', 10, 0.5);
+    expect(hits.length).toBe(2);
+  });
+
   test('removeDoc removes a document from results', () => {
     const idx = new Bm25Index();
     idx.addDoc('a.md', 'digital economy', {});

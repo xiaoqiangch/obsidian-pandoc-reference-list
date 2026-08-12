@@ -191,8 +191,8 @@ export class RagIndexer {
     }
   }
 
-  search(query: string, topK: number) {
-    return this.index.search(query, topK);
+  search(query: string, topK: number, minTermCoverage?: number) {
+    return this.index.search(query, topK, minTermCoverage);
   }
 
   destroy(): void {

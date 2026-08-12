@@ -127,7 +127,17 @@ export class Bm25Index {
     return true;
   }
 
-  search(query: string, topK: number): Bm25Hit[] {
+  /**
+   * Search the index for a query.
+   *
+   * @param query raw query text (tokenized internally)
+   * @param topK  max results to return
+   * @param minTermCoverage in [0,1]; a document must match at least this
+   *        fraction of the query terms to be returned. 1 = all terms must
+   *        match (AND semantics), which filters out partial matches such as
+   *        a CJK bigram collision (e.g. "哈德良" vs "哈德斯").
+   */
+  search(query: string, topK: number, minTermCoverage = 1): Bm25Hit[] {
     if (!query.trim() || this.docCount === 0) return [];
 
     const qTerms = Array.from(new Set(tokenize(query))).filter((t) => this.postings.has(t));
@@ -161,7 +171,9 @@ export class Bm25Index {
       }
     }
 
+    const threshold = Math.max(0, Math.min(1, minTermCoverage));
     return Array.from(scores.entries())
+      .filter(([, entry]) => entry.terms.length / qTerms.length >= threshold)
       .sort((a, b) => b[1].score - a[1].score)
       .slice(0, topK)
       .map(([docId, entry]) => ({
