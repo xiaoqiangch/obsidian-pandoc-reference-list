@@ -1,4 +1,10 @@
-import { tokenize } from './tokenizer';
+import { tokenize, parseQuery, extractCjkRuns } from './tokenizer';
+
+/**
+ * Separator between CJK runs stored in `RagDocMeta.cjkText`. Never appears in
+ * CJK text, so a pure-CJK query phrase can never match across a run boundary.
+ */
+const CJK_TEXT_SEP = '\u0000';
 
 export interface RagDocMeta {
   id: number;
@@ -9,6 +15,12 @@ export interface RagDocMeta {
   totalTerms: number;
   literature: boolean;
   citekey?: string;
+  /**
+   * Lowercased maximal CJK runs of the document, joined by CJK_TEXT_SEP.
+   * Enables Obsidian-style whole-phrase substring matching ("二十四桥" only
+   * matches documents that literally contain "二十四桥").
+   */
+  cjkText: string;
 }
 
 export interface Bm25Hit {
@@ -88,6 +100,7 @@ export class Bm25Index {
       totalTerms,
       literature: extra.literature ?? false,
       citekey: extra.citekey,
+      cjkText: extractCjkRuns(content).join(CJK_TEXT_SEP),
     };
 
     this.documents.set(id, meta);
@@ -130,24 +143,48 @@ export class Bm25Index {
   /**
    * Search the index for a query.
    *
+   * Matching semantics:
+   * - Latin words: exact token match, relaxed by `minTermCoverage` (1 = all
+   *   words must match).
+   * - CJK runs: every run must appear as a contiguous substring of the
+   *   document (whole-phrase match, same as Obsidian's native search). This is
+   *   unconditional — "二十四桥" can never match a document that merely
+   *   contains "二十".
+   *
    * @param query raw query text (tokenized internally)
    * @param topK  max results to return
-   * @param minTermCoverage in [0,1]; a document must match at least this
-   *        fraction of the query terms to be returned. 1 = all terms must
-   *        match (AND semantics), which filters out partial matches such as
-   *        a CJK bigram collision (e.g. "哈德良" vs "哈德斯").
+   * @param minTermCoverage in [0,1]; the fraction of latin query words a
+   *        document must match. Ignored for CJK runs.
    */
   search(query: string, topK: number, minTermCoverage = 1): Bm25Hit[] {
     if (!query.trim() || this.docCount === 0) return [];
 
-    const qTerms = Array.from(new Set(tokenize(query))).filter((t) => this.postings.has(t));
-    if (qTerms.length === 0) return [];
+    const { latin, cjkRuns } = parseQuery(query);
+    if (latin.length === 0 && cjkRuns.length === 0) return [];
+
+    const matchableLatin = latin.filter((t) => this.postings.has(t));
+
+    // Candidate docs per CJK run: documents that contain every bigram of the
+    // run (a superset of documents containing the whole run). This prunes the
+    // substring verification below to a small set.
+    const runCandidateSets: Set<number>[] = [];
+    for (const run of cjkRuns) {
+      const toks = tokenize(run).filter((t) => this.postings.has(t));
+      if (toks.length === 0) return []; // no document can contain this run
+      runCandidateSets.push(intersectPostings(toks, this.postings));
+    }
+
+    const allTokens = new Set<string>(matchableLatin);
+    for (const run of cjkRuns) {
+      for (const t of tokenize(run)) if (this.postings.has(t)) allTokens.add(t);
+    }
+    if (allTokens.size === 0) return [];
 
     const N = this.docCount;
     const avgdl = this.avgdl;
     const scores = new Map<number, { score: number; terms: string[] }>();
 
-    for (const term of qTerms) {
+    for (const term of allTokens) {
       const arr = this.postings.get(term)!;
       const df = arr.length / 2;
       const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
@@ -172,15 +209,37 @@ export class Bm25Index {
     }
 
     const threshold = Math.max(0, Math.min(1, minTermCoverage));
-    return Array.from(scores.entries())
-      .filter(([, entry]) => entry.terms.length / qTerms.length >= threshold)
-      .sort((a, b) => b[1].score - a[1].score)
-      .slice(0, topK)
-      .map(([docId, entry]) => ({
-        doc: this.documents.get(docId)!,
-        score: entry.score,
-        terms: entry.terms,
-      }));
+    const latinSet = new Set(matchableLatin);
+    const out: Bm25Hit[] = [];
+
+    for (const [docId, entry] of scores) {
+      const meta = this.documents.get(docId);
+      if (!meta) continue;
+
+      // Whole-phrase CJK match: the full run must appear contiguously.
+      if (cjkRuns.length > 0) {
+        if (!runCandidateSets.every((s) => s.has(docId))) continue;
+        const text = meta.cjkText ?? '';
+        if (!cjkRuns.every((run) => text.includes(run))) continue;
+      }
+
+      // Latin word coverage.
+      if (matchableLatin.length > 0) {
+        let matched = 0;
+        for (const t of entry.terms) if (latinSet.has(t)) matched++;
+        if (matched / matchableLatin.length < threshold) continue;
+      }
+
+      // Returned terms drive snippet selection and highlighting: matched latin
+      // words plus the full CJK phrases (so "二十四桥" is highlighted as one
+      // unit, not as overlapping bigrams).
+      const terms: string[] = entry.terms.filter((t) => latinSet.has(t));
+      for (const run of cjkRuns) terms.push(run);
+      out.push({ doc: meta, score: entry.score, terms });
+    }
+
+    out.sort((a, b) => b.score - a.score);
+    return out.slice(0, topK);
   }
 
   serialize(): Bm25Serialized {
@@ -216,6 +275,29 @@ export class Bm25Index {
       }
     }
   }
+}
+
+/**
+ * Intersect the postings lists of the given terms into a single doc-id set.
+ * Postings are flat [docId, tf, docId, tf, ...] arrays; only the doc ids are
+ * considered here.
+ */
+function intersectPostings(tokens: string[], postings: Map<string, number[]>): Set<number> {
+  const set = new Set<number>();
+  const first = postings.get(tokens[0]);
+  if (!first) return set;
+  for (let i = 0; i < first.length; i += 2) set.add(first[i]);
+  for (let k = 1; k < tokens.length; k++) {
+    const arr = postings.get(tokens[k]);
+    if (!arr) continue;
+    const next = new Set<number>();
+    for (let i = 0; i < arr.length; i += 2) {
+      if (set.has(arr[i])) next.add(arr[i]);
+    }
+    set.clear();
+    for (const d of next) set.add(d);
+  }
+  return set;
 }
 
 /**

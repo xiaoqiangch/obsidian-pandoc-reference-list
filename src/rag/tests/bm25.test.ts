@@ -41,6 +41,51 @@ describe('Bm25Index', () => {
     expect(hits[0].doc.path).toBe('hadrian.md');
   });
 
+  test('CJK whole-phrase match: 二十四桥 does not match a doc with only 二十', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', '二十四桥明月夜，玉人何处教吹箫。', {});
+    idx.addDoc('b.md', '二十世纪以来的经济变迁。', {});
+    idx.addDoc('c.md', '二十四节气与农业生产。', {});
+
+    const hits = idx.search('二十四桥', 10);
+    expect(hits.length).toBe(1);
+    expect(hits[0].doc.path).toBe('a.md');
+  });
+
+  test('CJK phrase matches inside a longer run', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', '此处提及二十四桥明月夜一句。', {});
+    const hits = idx.search('二十四桥', 10);
+    expect(hits.length).toBe(1);
+    expect(hits[0].doc.path).toBe('a.md');
+  });
+
+  test('CJK run split by non-CJK characters does not match the whole phrase', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', '二十与四桥是两处不同的东西。', {});
+    expect(idx.search('二十四桥', 10).length).toBe(0);
+  });
+
+  test('mixed CJK phrase + latin term requires both', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', '二十四桥明月夜 economy', {});
+    idx.addDoc('b.md', '二十四桥明月夜 art', {});
+    idx.addDoc('c.md', 'economy growth', {});
+
+    const hits = idx.search('二十四桥 economy', 10);
+    expect(hits.length).toBe(1);
+    expect(hits[0].doc.path).toBe('a.md');
+  });
+
+  test('returned terms include the full CJK phrase for highlighting', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', '二十四桥明月夜', {});
+    const hits = idx.search('二十四桥', 10);
+    expect(hits[0].terms).toContain('二十四桥');
+    // Bigrams should not leak into the highlight terms.
+    expect(hits[0].terms).not.toContain('二十');
+  });
+
   test('multiple keywords require all terms by default (AND)', () => {
     const idx = new Bm25Index();
     idx.addDoc('a.md', 'digital economy growth model', {});
@@ -79,6 +124,18 @@ describe('Bm25Index', () => {
     idx2.load(data);
     expect(idx2.docCount).toBe(2);
     const hits = idx2.search('economy', 10);
+    expect(hits[0].doc.path).toBe('a.md');
+  });
+
+  test('serialize / load round trip preserves CJK whole-phrase matching', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', '二十四桥明月夜', {});
+    idx.addDoc('b.md', '二十世纪', {});
+    const data = idx.serialize();
+    const idx2 = new Bm25Index();
+    idx2.load(data);
+    const hits = idx2.search('二十四桥', 10);
+    expect(hits.length).toBe(1);
     expect(hits[0].doc.path).toBe('a.md');
   });
 

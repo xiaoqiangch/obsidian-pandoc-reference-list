@@ -867,7 +867,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('关键词命中覆盖率')
       .setDesc(
-        '命中结果必须包含的查询词比例（1 = 全部关键词都需命中，过滤掉只沾边一个词的结果，如“哈德良”不再命中“哈德斯”）。'
+        '英文多词查询时，命中结果必须包含的英文词比例（1 = 全部英文词都需命中）。中文按 Obsidian 全文检索语义整串匹配：搜“二十四桥”只会命中真的包含“二十四桥”的文件，不再拆成 bigram 命中“二十”。'
       )
       .addSlider((slider) =>
         slider

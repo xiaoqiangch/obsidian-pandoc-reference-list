@@ -17,6 +17,10 @@ const STOPWORDS = new Set([
  * - Latin words are lowercased and split on non-alphanumeric boundaries.
  * - CJK runs are emitted as overlapping character bigrams (plus the single
  *   character for runs of length 1).
+ *
+ * Bigrams are only used as an inverted-index key for candidate generation;
+ * matching semantics for CJK are enforced separately via {@link extractCjkRuns}
+ * substring verification in the search layer (Obsidian-style whole-phrase match).
  */
 export function tokenize(text: string): string[] {
   const tokens: string[] = [];
@@ -58,4 +62,75 @@ export function tokenize(text: string): string[] {
   }
 
   return tokens;
+}
+
+/**
+ * Extract every maximal CJK run in the text (contiguous CJK characters),
+ * lowercased. Used for whole-phrase substring matching: a CJK query phrase
+ * must appear contiguously inside one of these runs to be a match.
+ */
+export function extractCjkRuns(text: string): string[] {
+  const runs: string[] = [];
+  const lower = text.toLowerCase();
+  let i = 0;
+  const n = lower.length;
+
+  while (i < n) {
+    if (CJK_RE.test(lower[i])) {
+      let j = i;
+      while (j < n && CJK_RE.test(lower[j])) j++;
+      runs.push(lower.substring(i, j));
+      i = j;
+      continue;
+    }
+    i++;
+  }
+
+  return runs;
+}
+
+export interface ParsedQuery {
+  /** Lowercased latin words (stopwords removed). */
+  latin: string[];
+  /** Maximal CJK runs, each matched as a whole contiguous substring. */
+  cjkRuns: string[];
+}
+
+/**
+ * Split a raw query into latin words and CJK runs. Latin words keep
+ * per-term (AND/OR by coverage) semantics; every CJK run must appear as a
+ * contiguous substring in a document for it to match — the same behavior as
+ * Obsidian's native full-text search for CJK.
+ */
+export function parseQuery(text: string): ParsedQuery {
+  const latin: string[] = [];
+  const cjkRuns: string[] = [];
+  const lower = text.toLowerCase();
+  let i = 0;
+  const n = lower.length;
+
+  while (i < n) {
+    const ch = lower[i];
+
+    if (CJK_RE.test(ch)) {
+      let j = i;
+      while (j < n && CJK_RE.test(lower[j])) j++;
+      cjkRuns.push(lower.substring(i, j));
+      i = j;
+      continue;
+    }
+
+    if (/[a-z0-9]/.test(ch)) {
+      let j = i;
+      while (j < n && /[a-z0-9]/.test(lower[j])) j++;
+      const word = lower.substring(i, j);
+      if (!STOPWORDS.has(word)) latin.push(word);
+      i = j;
+      continue;
+    }
+
+    i++;
+  }
+
+  return { latin, cjkRuns };
 }

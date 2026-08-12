@@ -7,7 +7,7 @@ const path = require('path');
 
 const EXCLUDE_DIR_RE = /(^|\/)(\.trash|\.obsidian|\.git|\.openclaw|_bib-links)(\/|$)/;
 const EXCLUDE_ANY_DIR_RE = /(^|\/)(node_modules|\.yarn|bower_components)(\/|$)/;
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const IDLE_BATCH = 40;
 // iCloud / APFS on-demand materialization can briefly shift a file's mtime
 // without the content changing; a small tolerance avoids spurious re-indexes.
