@@ -802,21 +802,6 @@ body {
     gap: 6px;
 }
 
-.pwc-search-scope {
-    flex-shrink: 0;
-    font-size: var(--font-ui-small);
-    padding: 2px 8px;
-    border-radius: var(--radius-s, 4px);
-    border: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary-alt);
-    color: var(--text-normal);
-    cursor: pointer;
-}
-
-.pwc-search-scope:hover {
-    background: var(--background-modifier-hover);
-}
-
 .pwc-rag-group {
     margin-top: 8px;
     border-top: 1px solid var(--background-modifier-border);

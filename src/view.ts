@@ -54,7 +54,6 @@ export class ReferenceListView extends ItemView {
   activeMarkdownLeaf: MarkdownView;
   mode: 'current' | 'all' = 'current';
   searchQuery = '';
-  searchScope: 'library' | 'vault' = 'library';
   isRecentOnly = false;
   showAddSection = false;
   isProcessing = false;
@@ -73,6 +72,11 @@ export class ReferenceListView extends ItemView {
   /** Which search-result groups are currently toggled on (visible). */
   private ragGroupVisibility: Set<string> = new Set(['meta', 'rerank', 'fulltext', 'semantic']);
   private ragNavButtons: Map<string, HTMLElement> | null = null;
+
+  /** Monotonic render generation. Each renderAllReferencesList() call bumps it;
+   *  stale async render continuations check it and bail out before touching the
+   *  DOM, so overlapping renders can't clobber each other (panel flashing). */
+  private renderSeq = 0;
   private _pendingListState: ListState | null = null;
   private _skipStateCapture = false;
 
@@ -241,24 +245,6 @@ export class ReferenceListView extends ItemView {
 
     const searchContainer = header.createDiv({ cls: 'pwc-manager-search' });
 
-    const scopeBtn = searchContainer.createEl('button', {
-      cls: 'pwc-search-scope',
-      text: this.searchScope === 'vault' ? t('Vault') : t('Library'),
-    });
-    scopeBtn.setAttr('aria-label', t('Switch search scope'));
-    scopeBtn.addEventListener('click', () => {
-      this.searchScope = this.searchScope === 'vault' ? 'library' : 'vault';
-      scopeBtn.setText(this.searchScope === 'vault' ? t('Vault') : t('Library'));
-      this.mode = 'all';
-      this.displayedCount = 50;
-      this.showAddSection = false;
-      if (this.searchQuery) {
-        this.debouncedRender();
-      } else {
-        this.setViewContent(null);
-      }
-    });
-
     const searchInput = searchContainer.createEl('input', {
       attr: { type: 'text', placeholder: t('Search references...'), value: this.searchQuery }
     });
@@ -278,14 +264,8 @@ export class ReferenceListView extends ItemView {
 
     searchInput.addEventListener('input', (e) => {
       this.searchQuery = (e.target as HTMLInputElement).value.toLowerCase();
-      if (this.searchScope === 'vault') {
-        this.mode = 'all';
-        this.debouncedRender();
-      } else if (this.mode === 'all') {
-        this.debouncedRender();
-      } else {
-        this.filterCurrentReferences();
-      }
+      this.mode = 'all';
+      this.debouncedRender();
     });
 
   }
@@ -317,9 +297,10 @@ export class ReferenceListView extends ItemView {
     });
   }
 
-  async renderRagResults(container: HTMLElement, scope: 'library' | 'vault') {
+  async renderRagResults(container: HTMLElement, seq?: number) {
     const query = this.searchQuery.trim();
     if (!query) return;
+    if (seq !== undefined && seq !== this.renderSeq) return;
 
     if (!this.plugin.settings.enableRagSearch) {
       container.createDiv({ cls: 'pane-empty', text: t('RAG search is disabled') });
@@ -330,9 +311,10 @@ export class ReferenceListView extends ItemView {
     // full-text + semantic candidates and re-rank them. Falls back to the
     // plain full-text / semantic groups when disabled or on any failure.
     if (this.plugin.settings.rerankEnabled && this.plugin.settings.rerankApiUrl) {
-      const ok = await this.renderRerankedResults(container, scope);
+      const ok = await this.renderRerankedResults(container, seq);
       if (ok) return;
     }
+    if (seq !== undefined && seq !== this.renderSeq) return;
 
     const rag = this.plugin.ragIndexer;
     if (rag.index.docCount === 0) {
@@ -341,13 +323,13 @@ export class ReferenceListView extends ItemView {
     }
 
     const hits = rag.search(query, 60, this.plugin.settings.ragMinTermCoverage ?? 1);
-    const relevant = scope === 'library' ? hits.filter((h) => h.doc.literature) : hits;
+    const relevant = hits;
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });
     group.setAttr('data-rag-group', 'fulltext');
     if (relevant.length === 0) {
       group.createDiv({ cls: 'pwc-rag-group-title', text: t('Full-text hits') });
-      group.createDiv({ cls: 'pane-empty', text: scope === 'vault' ? t('No results found in vault.') : t('No full-text hits') });
+      group.createDiv({ cls: 'pane-empty', text: t('No results found in vault.') });
       return;
     }
 
@@ -370,6 +352,7 @@ export class ReferenceListView extends ItemView {
       } catch {
         continue;
       }
+      if (seq !== undefined && seq !== this.renderSeq) return;
       if (!content) continue;
 
       const layout =
@@ -382,7 +365,7 @@ export class ReferenceListView extends ItemView {
     }
 
     if (results.length === 0) {
-      group.createDiv({ cls: 'pane-empty', text: scope === 'vault' ? t('No results found in vault.') : t('No full-text hits') });
+      group.createDiv({ cls: 'pane-empty', text: t('No results found in vault.') });
       return;
     }
 
@@ -410,7 +393,7 @@ export class ReferenceListView extends ItemView {
     }
 
     if (this.plugin.settings.enableNativeSemantic) {
-      await this.renderNativeSemanticResults(container, query, scope);
+      await this.renderNativeSemanticResults(container, query, seq);
     }
   }
 
@@ -428,11 +411,12 @@ export class ReferenceListView extends ItemView {
    */
   private async renderRerankedResults(
     container: HTMLElement,
-    scope: 'library' | 'vault'
+    seq?: number
   ): Promise<boolean> {
     const settings = this.plugin.settings;
     const query = this.searchQuery.trim();
     if (!query) return false;
+    if (seq !== undefined && seq !== this.renderSeq) return false;
 
     const rag = this.plugin.ragIndexer;
     if (!rag || rag.index.docCount === 0) return false;
@@ -471,13 +455,13 @@ export class ReferenceListView extends ItemView {
       settings.ragMinTermCoverage ?? 1
     );
     for (const hit of ftHits) {
-      if (scope === 'library' && !hit.doc.literature) continue;
       let content = '';
       try {
         content = await this.readVaultText(hit.doc.path);
       } catch {
         continue;
       }
+      if (seq !== undefined && seq !== this.renderSeq) return false;
       if (!content) continue;
       const layout =
         hit.doc.literature && hit.doc.citekey
@@ -511,7 +495,7 @@ export class ReferenceListView extends ItemView {
       } catch (e: any) {
         debugLog('View', 'Semantic search failed during rerank', { error: e.message });
       }
-      if (scope === 'library') vecHits = vecHits.filter((h) => h.literature);
+      if (seq !== undefined && seq !== this.renderSeq) return false;
       for (const h of vecHits) {
         let content = '';
         try {
@@ -519,6 +503,7 @@ export class ReferenceListView extends ItemView {
         } catch {
           continue;
         }
+        if (seq !== undefined && seq !== this.renderSeq) return false;
         if (!content) continue;
         const lines = content.split('\n');
         const start = Math.max(0, h.startLine - 1);
@@ -576,6 +561,7 @@ export class ReferenceListView extends ItemView {
       debugLog('View', 'Rerank failed, falling back to plain groups', { error: e.message });
       return false;
     }
+    if (seq !== undefined && seq !== this.renderSeq) return false;
     if (reranked.length === 0) return false;
 
     // Render one merged group, ordered by rerank score, grouped by document.
@@ -677,10 +663,11 @@ export class ReferenceListView extends ItemView {
   async renderNativeSemanticResults(
     container: HTMLElement,
     query: string,
-    scope: 'library' | 'vault'
+    seq?: number
   ) {
     const idx = this.plugin.semanticIndexer;
     if (!idx || !idx.enabled || idx.index.chunkCount === 0) return;
+    if (seq !== undefined && seq !== this.renderSeq) return;
 
     let vecHits: SemanticVectorHit[];
     try {
@@ -693,8 +680,7 @@ export class ReferenceListView extends ItemView {
       debugLog('View', 'Semantic search failed', { error: e.message });
       return;
     }
-    if (vecHits.length === 0) return;
-    if (scope === 'library') vecHits = vecHits.filter((h) => h.literature);
+    if (seq !== undefined && seq !== this.renderSeq) return;
     if (vecHits.length === 0) return;
 
     const vaultRoot = getVaultRoot();
@@ -721,6 +707,7 @@ export class ReferenceListView extends ItemView {
       } catch {
         continue;
       }
+      if (seq !== undefined && seq !== this.renderSeq) return;
       if (!content) continue;
       const lines = content.split('\n');
       const first = hits[0];
@@ -898,9 +885,10 @@ export class ReferenceListView extends ItemView {
   /** Render bibliography entries (bib/Zotero metadata) matching the query.
    *  Uses the same standard CSL format (title / authors / action buttons) as
    *  the full reference list, so no extra "locate" step is needed. */
-  async renderMetaHits(container: HTMLElement, query: string) {
+  async renderMetaHits(container: HTMLElement, query: string, seq?: number) {
     const q = query.trim().toLowerCase();
     if (!q) return;
+    if (seq !== undefined && seq !== this.renderSeq) return;
     const matches = Array.from(this.plugin.bibManager.bibCache.values()).filter((entry) =>
       matchesMeta(entry, q)
     );
@@ -909,7 +897,7 @@ export class ReferenceListView extends ItemView {
     const group = container.createDiv({ cls: 'pwc-rag-group' });
     group.setAttr('data-rag-group', 'meta');
     group.createDiv({ cls: 'pwc-rag-group-title', text: t('Reference entries') });
-    await this.renderCslEntries(group, matches.slice(0, 20).map((e) => e.id));
+    await this.renderCslEntries(group, matches.slice(0, 20).map((e) => e.id), seq);
   }
 
   /**
@@ -918,7 +906,7 @@ export class ReferenceListView extends ItemView {
    * usual action buttons (copy citekey, edit, details, CNKI/Scholar, URL,
    * Zotero, attachments, convert, …) to each entry.
    */
-  private async renderCslEntries(container: HTMLElement, ids: string[]): Promise<void> {
+  private async renderCslEntries(container: HTMLElement, ids: string[], seq?: number): Promise<void> {
     if (!this.plugin.bibManager.engine) return;
     if (ids.length === 0) {
       container.createDiv({ text: t('No entries to display.'), cls: 'pane-empty' });
@@ -929,6 +917,7 @@ export class ReferenceListView extends ItemView {
       if (this.plugin.settings.pullFromZotero) {
         await this.plugin.bibManager.getZLinksForKeys(new Set(ids));
       }
+      if (seq !== undefined && seq !== this.renderSeq) return;
 
       let bib;
       try {
@@ -979,6 +968,8 @@ export class ReferenceListView extends ItemView {
       htmlStr.push(metadata.bibend);
 
       const parsed = new DOMParser().parseFromString(htmlStr.join(''), 'text/html').body.firstElementChild as HTMLElement;
+
+      if (seq !== undefined && seq !== this.renderSeq) return;
 
       if (parsed) {
         parsed.findAll('.csl-entry').forEach((e, i) => {
@@ -1317,6 +1308,7 @@ export class ReferenceListView extends ItemView {
   async renderAllReferencesList(container?: HTMLElement) {
     debugLog('View', 'renderAllReferencesList started');
     const parent = container || this.contentEl;
+    const seq = ++this.renderSeq;
     const savedState = this._pendingListState;
     this._pendingListState = null;
 
@@ -1327,17 +1319,14 @@ export class ReferenceListView extends ItemView {
       }
       listContainer.empty();
 
-      if (this.searchQuery.trim() && this.searchScope === 'vault') {
+      if (this.searchQuery.trim()) {
         this.renderGroupNav(listContainer);
-        await this.renderMetaHits(listContainer, this.searchQuery);
-        await this.renderRagResults(listContainer, 'vault');
+        await this.renderMetaHits(listContainer, this.searchQuery, seq);
+        if (seq !== this.renderSeq) return;
+        await this.renderRagResults(listContainer, seq);
+        if (seq !== this.renderSeq) return;
         this.updateGroupNav();
         return;
-      }
-      if (this.searchQuery.trim() && this.searchScope === 'library') {
-        this.renderGroupNav(listContainer);
-        await this.renderRagResults(listContainer, 'library');
-        this.updateGroupNav();
       }
     
     if (this.showAddSection) {
@@ -1513,7 +1502,7 @@ export class ReferenceListView extends ItemView {
             return;
         }
 
-        await this.renderCslEntries(bibContainer, allIds);
+        await this.renderCslEntries(bibContainer, allIds, seq);
 
         if (this.filteredEntries.length > this.displayedCount) {
             const loadMoreBtn = bibContainer.createEl('button', {
@@ -1530,7 +1519,9 @@ export class ReferenceListView extends ItemView {
         bibContainer.createDiv({ text: t('Error rendering bibliography.'), cls: 'pane-empty' });
     }
     } finally {
-      this.restoreListState(savedState);
+      if (seq === this.renderSeq) {
+        this.restoreListState(savedState);
+      }
     }
   }
 

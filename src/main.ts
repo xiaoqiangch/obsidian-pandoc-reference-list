@@ -224,7 +224,6 @@ export default class ReferenceList extends Plugin {
         const view = await this.initLeaf();
         if (view) {
           view.mode = 'all';
-          view.searchScope = 'vault';
           view.renderAllReferences();
           setTimeout(() => {
             const input = view.contentEl.querySelector(
@@ -262,6 +261,11 @@ export default class ReferenceList extends Plugin {
         'changed',
         debounce(
           async (file) => {
+            // Same rationale as editor-change: an 'all'-mode panel doesn't
+            // depend on the active note's metadata, so skip the rebuild while
+            // the user is typing/editing the note.
+            if (this.view?.mode === 'all') return;
+
             await this.initPromise.promise;
             await this.bibManager.initPromise.promise;
 
@@ -279,6 +283,11 @@ export default class ReferenceList extends Plugin {
 
     this.registerEvent(
       app.workspace.on('editor-change', () => {
+        // In 'all' mode the panel shows the full reference list or search
+        // results, neither of which depends on the active editor's content.
+        // Skipping here avoids a full panel re-render on every keystroke,
+        // which previously made the panel flicker while typing.
+        if (this.view?.mode === 'all') return;
         this.processReferencesDebounced();
       })
     );
