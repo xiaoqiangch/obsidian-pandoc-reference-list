@@ -46,6 +46,9 @@ export class SemanticIndexer {
   progress: IndexProgress | null = null;
   /** Files skipped in the current build because reading / embedding failed. */
   failedCount = 0;
+  /** Number of vault md files missing from the index or changed since last
+   *  embed (stale). -1 until first computed. */
+  pendingCount = -1;
   private app: App;
   private outputPath: string;
   private cacheJsonPath: string;
@@ -227,6 +230,25 @@ export class SemanticIndexer {
       this.building = false;
       this.progress = null;
     }
+  }
+
+  /**
+   * Count vault md files that still need embedding: those missing from the
+   * index or changed since their last embed. Pure stat comparison — no API
+   * calls, no file reads — safe to run at startup and in the settings view.
+   */
+  countPendingFiles(): number {
+    let pending = 0;
+    let total = 0;
+    const files = this.app.vault.getMarkdownFiles();
+    for (const f of files) {
+      if (!shouldIndexPath(f.path)) continue;
+      total++;
+      if (docChanged(this.index.getMeta(f.path), f.stat)) pending++;
+    }
+    this.pendingCount = pending;
+    debugLog('SemanticIndexer', 'countPendingFiles', { total, pending });
+    return pending;
   }
 
   private async indexFile(f: TFile): Promise<void> {

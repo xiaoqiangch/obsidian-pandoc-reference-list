@@ -763,6 +763,18 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     );
     semanticStatus.addButton((button) =>
       button
+        .setButtonText('统计待嵌入')
+        .onClick(() => {
+          const pending = this.plugin.semanticIndexer.countPendingFiles();
+          new Notice(
+            pending > 0
+              ? `还有 ${pending} 个文件需要嵌入。`
+              : '索引已是最新，无需嵌入。'
+          );
+        })
+    );
+    semanticStatus.addButton((button) =>
+      button
         .setButtonText('增量更新')
         .onClick(() => {
           this.plugin.updateSemanticIndex();
@@ -805,6 +817,15 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             idx.enabled ? '' : '（未启用或未配置 Key）'
           }${idx.failedCount > 0 ? `（上次构建跳过 ${idx.failedCount} 个失败文件）` : ''}。`,
         });
+        if (idx.pendingCount >= 0) {
+          semanticStatus.descEl.createDiv({
+            cls: 'pwc-semantic-pending-count',
+            text:
+              idx.pendingCount > 0
+                ? `还有 ${idx.pendingCount} 个文件需要嵌入。`
+                : '索引已是最新，无需嵌入。',
+          });
+        }
         semanticStatus.descEl.createDiv({
           cls: 'pwc-semantic-status-hint',
           text: '语义索引为手动维护：不会随文件变化自动重建。新增/修改文件后请点“增量更新”，首次或需全量重建时点“重建语义索引”。索引缓存存于本机（不随 iCloud 同步），换电脑后需在本机重建一次。',

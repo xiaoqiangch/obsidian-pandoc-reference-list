@@ -816,6 +816,13 @@ body {
     line-height: 1.4;
 }
 
+.pwc-semantic-pending-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-warning, #e0a800);
+    margin-top: 4px;
+}
+
 .pwc-conversion-status-completed {
     color: var(--text-success, #4caf50);
 }

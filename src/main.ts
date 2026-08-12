@@ -484,7 +484,17 @@ export default class ReferenceList extends Plugin {
       const loaded = await this.semanticIndexer.loadCache();
       debugLog('Main', 'Semantic index cache loaded', { loaded });
       if (!loaded) {
-        new Notice('语义索引缓存不存在，请在设置中点击“重建语义索引”手动构建。');
+        const pending = this.semanticIndexer.countPendingFiles();
+        new Notice(
+          `语义索引未构建：当前有 ${pending} 个文件需要嵌入，请在设置中点击“重建语义索引”手动进行。`
+        );
+      } else {
+        const pending = this.semanticIndexer.countPendingFiles();
+        if (pending > 0) {
+          new Notice(
+            `语义索引较新：还有 ${pending} 个文件需要嵌入，可在设置中点击“增量更新”手动进行。`
+          );
+        }
       }
     } catch (e: any) {
       debugLog('Main', 'Semantic index load failed', { error: e.message });
@@ -501,6 +511,7 @@ export default class ReferenceList extends Plugin {
     new Notice('开始重建语义索引...');
     try {
       await this.semanticIndexer.buildAll((p) => this.reportSemanticProgress(p));
+      this.semanticIndexer.countPendingFiles();
       new Notice('语义索引重建完成');
     } catch (e: any) {
       new Notice(`语义索引重建失败：${e.message}`);
@@ -516,6 +527,7 @@ export default class ReferenceList extends Plugin {
     new Notice('开始增量更新语义索引...');
     try {
       await this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p));
+      this.semanticIndexer.countPendingFiles();
       new Notice('语义索引增量更新完成');
     } catch (e: any) {
       new Notice(`语义索引增量更新失败：${e.message}`);
