@@ -739,8 +739,10 @@ export class ReferenceListView extends ItemView {
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  /** Render bibliography entries (bib/Zotero metadata) matching the query. */
-  renderMetaHits(container: HTMLElement, query: string) {
+  /** Render bibliography entries (bib/Zotero metadata) matching the query.
+   *  Uses the same standard CSL format (title / authors / action buttons) as
+   *  the full reference list, so no extra "locate" step is needed. */
+  async renderMetaHits(container: HTMLElement, query: string) {
     const q = query.trim().toLowerCase();
     if (!q) return;
     const matches = Array.from(this.plugin.bibManager.bibCache.values()).filter((entry) =>
@@ -751,22 +753,317 @@ export class ReferenceListView extends ItemView {
     const group = container.createDiv({ cls: 'pwc-rag-group' });
     group.setAttr('data-rag-group', 'meta');
     group.createDiv({ cls: 'pwc-rag-group-title', text: t('Reference entries') });
+    await this.renderCslEntries(group, matches.slice(0, 20).map((e) => e.id));
+  }
 
-    for (const entry of matches.slice(0, 20)) {
-      const card = group.createDiv({ cls: 'pwc-rag-card' });
-      card.createEl('div', { cls: 'pwc-rag-card-title', text: entry.title || entry.id });
-      const authorStr = (entry.author || [])
-        .map((a) => [a.given, a.family].filter(Boolean).join(' '))
-        .filter(Boolean)
-        .join(', ');
-      const metaBits = [entry.id, authorStr, entry.year ? String(entry.year) : ''].filter(Boolean);
-      card.createEl('div', { cls: 'pwc-rag-card-path', text: metaBits.join(' · ') });
+  /**
+   * Render a set of bibliography entries in the standard CSL format (shared by
+   * both the full reference list and the "文献命中" search group). Attaches the
+   * usual action buttons (copy citekey, edit, details, CNKI/Scholar, URL,
+   * Zotero, attachments, convert, …) to each entry.
+   */
+  private async renderCslEntries(container: HTMLElement, ids: string[]): Promise<void> {
+    if (!this.plugin.bibManager.engine) return;
+    if (ids.length === 0) {
+      container.createDiv({ text: t('No entries to display.'), cls: 'pane-empty' });
+      return;
+    }
 
-      const actions = card.createDiv({ cls: 'pwc-rag-card-actions' });
-      this.addIconAction(actions, 'library', '定位到文献条目', () => {
-        this.searchScope = 'library';
-        this.plugin.focusEntry(entry.id);
+    try {
+      if (this.plugin.settings.pullFromZotero) {
+        await this.plugin.bibManager.getZLinksForKeys(new Set(ids));
+      }
+
+      let bib;
+      try {
+        this.plugin.bibManager.engine.updateItems(ids);
+        bib = this.plugin.bibManager.engine.makeBibliography();
+      } catch (err) {
+        console.error('Initial makeBibliography failed', err);
+        bib = false;
+      }
+
+      if (!bib || bib.length < 2) {
+        const entries: string[] = [];
+        const entry_ids: string[][] = [];
+        for (const id of ids) {
+          try {
+            this.plugin.bibManager.engine.updateItems([id]);
+            const res = this.plugin.bibManager.engine.makeBibliography();
+            if (res && res.length >= 2 && res[1].length > 0) {
+              entries.push(res[1][0]);
+              entry_ids.push(res[0].entry_ids[0]);
+            }
+          } catch (e) {
+            console.warn(`Failed to render item ${id}:`, e);
+          }
+        }
+        if (entries.length > 0) {
+          bib = [{
+            bibstart: '<div class="csl-bib-body">',
+            bibend: '</div>',
+            entry_ids: entry_ids,
+          }, entries];
+        }
+      }
+
+      if (!bib || bib.length < 2) {
+        container.createDiv({ text: t('No entries to display.'), cls: 'pane-empty' });
+        return;
+      }
+
+      const metadata = bib[0];
+      const bibEntries = bib[1];
+      const htmlStr = [metadata.bibstart];
+      bibEntries.forEach((entry: string, i: number) => {
+        const id = metadata.entry_ids[i][0];
+        const injected = entry.replace(/<([a-z0-9]+)/i, `<$1 data-citekey="${id}"`);
+        htmlStr.push(injected);
       });
+      htmlStr.push(metadata.bibend);
+
+      const parsed = new DOMParser().parseFromString(htmlStr.join(''), 'text/html').body.firstElementChild as HTMLElement;
+
+      if (parsed) {
+        parsed.findAll('.csl-entry').forEach((e, i) => {
+          const id = e.dataset.citekey || metadata.entry_ids[i][0];
+          const entry = this.plugin.bibManager.bibCache.get(id);
+
+          const wrapper = createDiv({ cls: 'csl-entry-wrapper' });
+          e.parentElement.insertBefore(wrapper, e);
+          wrapper.append(e);
+
+          const target = e.querySelector('.csl-right-inline') || e;
+          const btnContainer = target.createSpan({ cls: 'pwc-entry-btns' });
+
+          if (entry) {
+            const zAttachmentLinks = this.plugin.bibManager.zCitekeyToAttachmentLinks.get(id) || [];
+            const localAttachmentLinks = this.plugin.bibManager.parseBibFileField(entry.file);
+            const paths = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
+
+            // Copy Citekey Button
+            btnContainer.createDiv('clickable-icon', (div) => {
+              setIcon(div, 'copy');
+              div.setAttr('aria-label', t('Copy citekey'));
+              div.onClickEvent(async () => {
+                await navigator.clipboard.writeText(`[@${id}]`);
+                new Notice(t('Citekey copied to clipboard'));
+              });
+            });
+
+            // Edit Button
+            if (entry.sourceFile) {
+              btnContainer.createDiv('clickable-icon', (div) => {
+                setIcon(div, 'edit');
+                div.setAttr('aria-label', t('Edit in VS Code'));
+                div.onClickEvent(() => {
+                  const path = entry.sourceFile;
+                  const line = entry.line || 1;
+                  const url = `vscode://file${path}:${line}`;
+                  window.open(url);
+                });
+              });
+            }
+
+            // Info Button
+            btnContainer.createDiv('clickable-icon', (div) => {
+              setIcon(div, 'info');
+              div.setAttr('aria-label', t('Show details'));
+              div.onClickEvent((ev) => {
+                ev.stopPropagation();
+                showDetailedTooltip(entry, div);
+              });
+            });
+
+            // Search on CNKI
+            btnContainer.createDiv('clickable-icon', (div) => {
+              setIcon(div, 'search');
+              div.setAttr('aria-label', t('Search on CNKI'));
+              div.onClickEvent((ev) => {
+                ev.stopPropagation();
+                const entryTitle = entry.title || entry.id;
+                const url = `https://kns.cnki.net/kns8s/defaultresult/index?crossids=YSTT4HG0%2CLSTPFY1C%2CJUP3MUPD%2CMPMFIG1A%2CWQ0UVIAA%2CBLZOG7CK%2CPWFIRAGL%2CEMRPGLPA%2CNLBO1Z6R%2CNN3FJMUV&korder=TI&kw=${encodeURIComponent(entryTitle)}`;
+                window.open(url, '_blank');
+              });
+            });
+
+            // Search on Google Scholar
+            btnContainer.createDiv('clickable-icon', (div) => {
+              setIcon(div, 'graduation-cap');
+              div.setAttr('aria-label', t('Search on Google Scholar'));
+              div.onClickEvent((ev) => {
+                ev.stopPropagation();
+                const entryTitle = entry.title || entry.id;
+                const url = `https://scholar.google.com/scholar?q=${encodeURIComponent(entryTitle)}`;
+                window.open(url, '_blank');
+              });
+            });
+
+            // Open URL Button
+            if (entry.url) {
+              btnContainer.createDiv('clickable-icon', (div) => {
+                setIcon(div, 'link');
+                div.setAttr('aria-label', t('Open URL'));
+                div.onClickEvent(async (ev) => {
+                  ev.stopPropagation();
+                  const leaf = this.plugin.app.workspace.getRightLeaf(false);
+                  if (leaf && typeof (leaf as any).openUrl === 'function') {
+                    await (leaf as any).openUrl(entry.url);
+                    this.plugin.app.workspace.revealLeaf(leaf);
+                  } else {
+                    window.open(entry.url, '_blank');
+                  }
+                });
+              });
+            }
+
+            // Open in Zotero (for Zotero entries)
+            if (entry.groupID !== undefined) {
+              btnContainer.createDiv('clickable-icon', (div) => {
+                setIcon(div, 'lucide-external-link');
+                div.setAttr('aria-label', t('Open in Zotero'));
+                div.onClickEvent(async (ev) => {
+                  ev.stopPropagation();
+                  let link = this.plugin.bibManager.zCitekeyToLinks.get(id);
+                  if (!link) {
+                    await this.plugin.bibManager.getZLinksForKeys(new Set([id]));
+                    link = this.plugin.bibManager.zCitekeyToLinks.get(id);
+                  }
+                  if (link) {
+                    window.open(link, '_blank');
+                  } else {
+                    new Notice(t('Cannot connect to Zotero'));
+                  }
+                });
+              });
+            }
+
+            // Get Attachment Button (only for entries with a local bib sourceFile,
+            // since updateEntryFile needs to write the file field to a local bib)
+            const existingPaths = paths.filter(p => fs.existsSync(p));
+            const hasAttachment = existingPaths.length > 0;
+            if (!hasAttachment && entry.sourceFile) {
+              btnContainer.createDiv('clickable-icon', (div) => {
+                setIcon(div, 'folder-open');
+                div.setAttr('aria-label', t('Get attachment'));
+                div.onClickEvent(async (ev) => {
+                  ev.stopPropagation();
+                  await this.getAttachment(entry);
+                });
+              });
+            }
+
+            if (existingPaths.length > 0) {
+              existingPaths.forEach(link => {
+                const isPDF = link.toLowerCase().endsWith('.pdf');
+                const isEPUB = link.toLowerCase().endsWith('.epub');
+                const isHTML = link.toLowerCase().endsWith('.html') || link.toLowerCase().endsWith('.htm');
+                if (isPDF || isEPUB || isHTML) {
+                  btnContainer.createDiv('clickable-icon', (div) => {
+                    let icon = 'lucide-file-text';
+                    if (isEPUB) icon = 'lucide-book-open';
+                    if (isHTML) icon = 'lucide-globe';
+
+                    setIcon(div, icon);
+                    div.setAttr('aria-label', t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop()));
+                    div.onClickEvent(() => {
+                      if (isHTML) {
+                        this.openHTMLInternal(link);
+                      } else {
+                        this.plugin.bibManager.openAttachment(link);
+                      }
+                    });
+                  });
+                }
+                if (isPDF) {
+                  btnContainer.createDiv('clickable-icon', (div) => {
+                    setIcon(div, 'maximize');
+                    div.setAttr('aria-label', t('Open in Preview (Full Screen)'));
+                    div.onClickEvent(async (ev) => {
+                      ev.stopPropagation();
+                      await openPdfInPreview(link);
+                    });
+                  });
+                }
+                if (isEPUB) {
+                  btnContainer.createDiv('clickable-icon', (div) => {
+                    setIcon(div, 'maximize');
+                    div.setAttr('aria-label', t('Open in Default Reader'));
+                    div.onClickEvent(async (ev) => {
+                      ev.stopPropagation();
+                      await openEpubInDefaultReader(link);
+                    });
+                  });
+                }
+              });
+            }
+
+            // Convert to MD / Open MD buttons
+            const hasConvertableAttachment = existingPaths.some(
+              (p: string) => p.toLowerCase().endsWith('.pdf') || p.toLowerCase().endsWith('.epub')
+            );
+            if (hasConvertableAttachment) {
+              const convertablePath = existingPaths.find(
+                (p: string) => p.toLowerCase().endsWith('.pdf') || p.toLowerCase().endsWith('.epub')
+              )!;
+
+              // Open MD button (only if conversion is completed or md file exists)
+              const mdPath = getOutputMdPath(id, this.plugin.settings.convertOutputPath || 'literature');
+              if (mdPath && fs.existsSync(mdPath)) {
+                btnContainer.createDiv('clickable-icon', (div) => {
+                  setIcon(div, 'file-output');
+                  div.setAttr('aria-label', t('Open MD'));
+                  div.onClickEvent(async (ev) => {
+                    ev.stopPropagation();
+                    await this.openConvertedMd(mdPath);
+                  });
+                });
+              }
+
+              // Convert to MD button
+              const isCompleted = isConversionCompleted(id);
+              const isInProgress = isConversionInProgress(id);
+              const progress = this.conversionProgress.get(id);
+
+              btnContainer.createDiv({
+                cls: `clickable-icon pwc-convert-btn ${isCompleted ? 'is-active' : ''}`,
+                attr: {
+                  'aria-label': isCompleted
+                    ? t('Force re-convert')
+                    : isInProgress
+                    ? t('Conversion in progress')
+                    : t('Convert to MD'),
+                },
+              }, (div) => {
+                setIcon(div, isCompleted ? 'refresh-cw' : isInProgress ? 'loader' : 'file-down');
+                div.onClickEvent(async (ev) => {
+                  ev.stopPropagation();
+                  await this.startConversion(entry, convertablePath);
+                });
+
+                // Show progress indicator if in progress
+                if (progress && progress.status === 'in_progress') {
+                  const progressDiv = div.createDiv({ cls: 'pwc-conversion-progress' });
+                  const pct = progress.totalPages > 0
+                    ? Math.round((progress.currentPage / progress.totalPages) * 100)
+                    : 0;
+                  const progressBar = progressDiv.createDiv({ cls: 'pwc-conversion-progress-bar' });
+                  progressBar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' })
+                    .style.width = `${pct}%`;
+                  progressDiv.createDiv({
+                    cls: 'pwc-conversion-progress-text',
+                    text: `${progress.currentPage}/${progress.totalPages}`,
+                  });
+                }
+              });
+            }
+          }
+        });
+        container.append(parsed);
+      }
+    } catch (e) {
+      console.error('Error rendering bibliography:', e);
+      container.createDiv({ text: t('Error rendering bibliography.'), cls: 'pane-empty' });
     }
   }
 
@@ -876,7 +1173,7 @@ export class ReferenceListView extends ItemView {
 
       if (this.searchQuery.trim() && this.searchScope === 'vault') {
         this.renderGroupNav(listContainer);
-        this.renderMetaHits(listContainer, this.searchQuery);
+        await this.renderMetaHits(listContainer, this.searchQuery);
         await this.renderRagResults(listContainer, 'vault');
         this.updateGroupNav();
         return;
@@ -1062,305 +1359,13 @@ export class ReferenceListView extends ItemView {
     try {
         const pageEntries = this.filteredEntries.slice(0, this.displayedCount);
         const allIds = pageEntries.map(e => e.id);
-        
+
         if (allIds.length === 0) {
             bibContainer.createDiv({ text: t('No entries to display.'), cls: 'pane-empty' });
             return;
         }
 
-        if (this.plugin.settings.pullFromZotero) {
-            await this.plugin.bibManager.getZLinksForKeys(new Set(allIds));
-        }
-
-        let bib;
-        try {
-            this.plugin.bibManager.engine.updateItems(allIds);
-            bib = this.plugin.bibManager.engine.makeBibliography();
-        } catch (err) {
-            console.error('Initial makeBibliography failed', err);
-            bib = false;
-        }
-
-        if (!bib || bib.length < 2) {
-            const entries: string[] = [];
-            const entry_ids: string[][] = [];
-            for (const id of allIds) {
-                try {
-                    this.plugin.bibManager.engine.updateItems([id]);
-                    const res = this.plugin.bibManager.engine.makeBibliography();
-                    if (res && res.length >= 2 && res[1].length > 0) {
-                        entries.push(res[1][0]);
-                        entry_ids.push(res[0].entry_ids[0]);
-                    }
-                } catch (e) {
-                    console.warn(`Failed to render item ${id}:`, e);
-                }
-            }
-            if (entries.length > 0) {
-                bib = [{ 
-                    bibstart: '<div class="csl-bib-body">', 
-                    bibend: '</div>',
-                    entry_ids: entry_ids 
-                }, entries];
-            }
-        }
-        
-        if (!bib || bib.length < 2) {
-            bibContainer.createDiv({ text: t('No entries to display.'), cls: 'pane-empty' });
-            return;
-        }
-
-        const metadata = bib[0];
-        const bibEntries = bib[1];
-        const htmlStr = [metadata.bibstart];
-        bibEntries.forEach((entry: string, i: number) => {
-            const id = metadata.entry_ids[i][0];
-            const injected = entry.replace(/<([a-z0-9]+)/i, `<$1 data-citekey="${id}"`);
-            htmlStr.push(injected);
-        });
-        htmlStr.push(metadata.bibend);
-
-        const parsed = new DOMParser().parseFromString(htmlStr.join(''), 'text/html').body.firstElementChild as HTMLElement;
-        
-        if (parsed) {
-            parsed.findAll('.csl-entry').forEach((e, i) => {
-                const id = e.dataset.citekey || metadata.entry_ids[i][0];
-                const entry = this.plugin.bibManager.bibCache.get(id);
-
-                const wrapper = createDiv({ cls: 'csl-entry-wrapper' });
-                e.parentElement.insertBefore(wrapper, e);
-                wrapper.append(e);
-
-                const target = e.querySelector('.csl-right-inline') || e;
-                const btnContainer = target.createSpan({ cls: 'pwc-entry-btns' });
-
-                if (entry) {
-                    const zAttachmentLinks = this.plugin.bibManager.zCitekeyToAttachmentLinks.get(id) || [];
-                    const localAttachmentLinks = this.plugin.bibManager.parseBibFileField(entry.file);
-                    const paths = [...new Set([...zAttachmentLinks, ...localAttachmentLinks])];
-
-                    // Copy Citekey Button
-                    btnContainer.createDiv('clickable-icon', (div) => {
-                        setIcon(div, 'copy');
-                        div.setAttr('aria-label', t('Copy citekey'));
-                        div.onClickEvent(async () => {
-                            await navigator.clipboard.writeText(`[@${id}]`);
-                            new Notice(t('Citekey copied to clipboard'));
-                        });
-                    });
-
-                    // Edit Button
-                    if (entry.sourceFile) {
-                        btnContainer.createDiv('clickable-icon', (div) => {
-                            setIcon(div, 'edit');
-                            div.setAttr('aria-label', t('Edit in VS Code'));
-                            div.onClickEvent(() => {
-                                const path = entry.sourceFile;
-                                const line = entry.line || 1;
-                                const url = `vscode://file${path}:${line}`;
-                                window.open(url);
-                            });
-                        });
-                    }
-
-                    // Info Button
-                    btnContainer.createDiv('clickable-icon', (div) => {
-                        setIcon(div, 'info');
-                        div.setAttr('aria-label', t('Show details'));
-                        div.onClickEvent((ev) => {
-                            ev.stopPropagation();
-                            showDetailedTooltip(entry, div);
-                        });
-                    });
-
-                    // Search on CNKI
-                    btnContainer.createDiv('clickable-icon', (div) => {
-                        setIcon(div, 'search');
-                        div.setAttr('aria-label', t('Search on CNKI'));
-                        div.onClickEvent((ev) => {
-                            ev.stopPropagation();
-                            const entryTitle = entry.title || entry.id;
-                            const url = `https://kns.cnki.net/kns8s/defaultresult/index?crossids=YSTT4HG0%2CLSTPFY1C%2CJUP3MUPD%2CMPMFIG1A%2CWQ0UVIAA%2CBLZOG7CK%2CPWFIRAGL%2CEMRPGLPA%2CNLBO1Z6R%2CNN3FJMUV&korder=TI&kw=${encodeURIComponent(entryTitle)}`;
-                            window.open(url, '_blank');
-                        });
-                    });
-
-                    // Search on Google Scholar
-                    btnContainer.createDiv('clickable-icon', (div) => {
-                        setIcon(div, 'graduation-cap');
-                        div.setAttr('aria-label', t('Search on Google Scholar'));
-                        div.onClickEvent((ev) => {
-                            ev.stopPropagation();
-                            const entryTitle = entry.title || entry.id;
-                            const url = `https://scholar.google.com/scholar?q=${encodeURIComponent(entryTitle)}`;
-                            window.open(url, '_blank');
-                        });
-                    });
-
-                    // Open URL Button
-                    if (entry.url) {
-                        btnContainer.createDiv('clickable-icon', (div) => {
-                            setIcon(div, 'link');
-                            div.setAttr('aria-label', t('Open URL'));
-                            div.onClickEvent(async (ev) => {
-                                ev.stopPropagation();
-                                const leaf = this.plugin.app.workspace.getRightLeaf(false);
-                                if (leaf && typeof (leaf as any).openUrl === 'function') {
-                                    await (leaf as any).openUrl(entry.url);
-                                    this.plugin.app.workspace.revealLeaf(leaf);
-                                } else {
-                                    window.open(entry.url, '_blank');
-                                }
-                            });
-                        });
-                    }
-
-                    // Open in Zotero (for Zotero entries)
-                    if (entry.groupID !== undefined) {
-                        btnContainer.createDiv('clickable-icon', (div) => {
-                            setIcon(div, 'lucide-external-link');
-                            div.setAttr('aria-label', t('Open in Zotero'));
-                            div.onClickEvent(async (ev) => {
-                                ev.stopPropagation();
-                                let link = this.plugin.bibManager.zCitekeyToLinks.get(id);
-                                if (!link) {
-                                    await this.plugin.bibManager.getZLinksForKeys(new Set([id]));
-                                    link = this.plugin.bibManager.zCitekeyToLinks.get(id);
-                                }
-                                if (link) {
-                                    window.open(link, '_blank');
-                                } else {
-                                    new Notice(t('Cannot connect to Zotero'));
-                                }
-                            });
-                        });
-                    }
-
-                    // Get Attachment Button (only for entries with a local bib sourceFile,
-                    // since updateEntryFile needs to write the file field to a local bib)
-                    const existingPaths = paths.filter(p => fs.existsSync(p));
-                    const hasAttachment = existingPaths.length > 0;
-                    if (!hasAttachment && entry.sourceFile) {
-                        btnContainer.createDiv('clickable-icon', (div) => {
-                            setIcon(div, 'folder-open');
-                            div.setAttr('aria-label', t('Get attachment'));
-                            div.onClickEvent(async (ev) => {
-                                ev.stopPropagation();
-                                await this.getAttachment(entry);
-                            });
-                        });
-                    }
-
-                    if (existingPaths.length > 0) {
-                        existingPaths.forEach(link => {
-                            const isPDF = link.toLowerCase().endsWith('.pdf');
-                            const isEPUB = link.toLowerCase().endsWith('.epub');
-                            const isHTML = link.toLowerCase().endsWith('.html') || link.toLowerCase().endsWith('.htm');
-                            if (isPDF || isEPUB || isHTML) {
-                                btnContainer.createDiv('clickable-icon', (div) => {
-                                    let icon = 'lucide-file-text';
-                                    if (isEPUB) icon = 'lucide-book-open';
-                                    if (isHTML) icon = 'lucide-globe';
-                                    
-                                    setIcon(div, icon);
-                                    div.setAttr('aria-label', t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop()));
-                                    div.onClickEvent(() => {
-                                        if (isHTML) {
-                                            this.openHTMLInternal(link);
-                                        } else {
-                                            this.plugin.bibManager.openAttachment(link);
-                                        }
-                                    });
-                                });
-                            }
-                            if (isPDF) {
-                                btnContainer.createDiv('clickable-icon', (div) => {
-                                    setIcon(div, 'maximize');
-                                    div.setAttr('aria-label', t('Open in Preview (Full Screen)'));
-                                    div.onClickEvent(async (ev) => {
-                                        ev.stopPropagation();
-                                        await openPdfInPreview(link);
-                                    });
-                                });
-                            }
-                             if (isEPUB) {
-                                 btnContainer.createDiv('clickable-icon', (div) => {
-                                     setIcon(div, 'maximize');
-                                     div.setAttr('aria-label', t('Open in Default Reader'));
-                                     div.onClickEvent(async (ev) => {
-                                         ev.stopPropagation();
-                                         await openEpubInDefaultReader(link);
-                                     });
-                                 });
-                             }
-                         });
-                     }
-
-                    // Convert to MD / Open MD buttons
-                    const hasConvertableAttachment = existingPaths.some(
-                        (p: string) => p.toLowerCase().endsWith('.pdf') || p.toLowerCase().endsWith('.epub')
-                    );
-                    if (hasConvertableAttachment) {
-                        const convertablePath = existingPaths.find(
-                            (p: string) => p.toLowerCase().endsWith('.pdf') || p.toLowerCase().endsWith('.epub')
-                        )!;
-
-                        // Open MD button (only if conversion is completed or md file exists)
-                        const mdPath = getOutputMdPath(id, this.plugin.settings.convertOutputPath || 'literature');
-                        if (mdPath && fs.existsSync(mdPath)) {
-                            btnContainer.createDiv('clickable-icon', (div) => {
-                                setIcon(div, 'file-output');
-                                div.setAttr('aria-label', t('Open MD'));
-                                div.onClickEvent(async (ev) => {
-                                    ev.stopPropagation();
-                                    await this.openConvertedMd(mdPath);
-                                });
-                            });
-                        }
-
-                        // Convert to MD button
-                        const isCompleted = isConversionCompleted(id);
-                        const isInProgress = isConversionInProgress(id);
-                        const progress = this.conversionProgress.get(id);
-
-                        btnContainer.createDiv({
-                            cls: `clickable-icon pwc-convert-btn ${isCompleted ? 'is-active' : ''}`,
-                            attr: {
-                                'aria-label': isCompleted
-                                    ? t('Force re-convert')
-                                    : isInProgress
-                                    ? t('Conversion in progress')
-                                    : t('Convert to MD'),
-                            },
-                        }, (div) => {
-                            setIcon(div, isCompleted ? 'refresh-cw' : isInProgress ? 'loader' : 'file-down');
-                            div.onClickEvent(async (ev) => {
-                                ev.stopPropagation();
-                                await this.startConversion(entry, convertablePath);
-                            });
-
-                            // Show progress indicator if in progress
-                            if (progress && progress.status === 'in_progress') {
-                                const progressDiv = div.createDiv({ cls: 'pwc-conversion-progress' });
-                                const pct = progress.totalPages > 0
-                                    ? Math.round((progress.currentPage / progress.totalPages) * 100)
-                                    : 0;
-                                const progressBar = progressDiv.createDiv({ cls: 'pwc-conversion-progress-bar' });
-                                progressBar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' })
-                                    .style.width = `${pct}%`;
-                                progressDiv.createDiv({
-                                    cls: 'pwc-conversion-progress-text',
-                                    text: `${progress.currentPage}/${progress.totalPages}`,
-                                });
-                            }
-                        });
-                    }
-                }
-
-                // Hover Tooltip Logic removed as per user request
-            });
-            bibContainer.append(parsed);
-        }
+        await this.renderCslEntries(bibContainer, allIds);
 
         if (this.filteredEntries.length > this.displayedCount) {
             const loadMoreBtn = bibContainer.createEl('button', {
