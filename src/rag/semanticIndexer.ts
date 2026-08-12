@@ -3,7 +3,7 @@ import { debugLog, getCacheRoot } from '../helpers';
 import { SemanticVectorIndex, SemanticVectorHit } from './vectorIndex';
 import { chunkByLines } from './chunker';
 import { embedTexts, EmbeddingSettings } from './embedding';
-import { shouldIndexPath, isLiteraturePath } from './indexer';
+import { shouldIndexPath, isLiteraturePath, docChanged } from './indexer';
 import { extractTitle } from './bm25';
 
 const fs = require('fs');
@@ -191,7 +191,7 @@ export class SemanticIndexer {
       const changed: TFile[] = [];
       for (const f of files) {
         const meta = this.index.getMeta(f.path);
-        if (!meta || meta.mtime !== f.stat.mtime || meta.size !== f.stat.size) {
+        if (docChanged(meta, f.stat)) {
           changed.push(f);
         }
       }

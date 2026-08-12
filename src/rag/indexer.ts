@@ -6,18 +6,84 @@ const fs = require('fs');
 const path = require('path');
 
 const EXCLUDE_DIR_RE = /(^|\/)(\.trash|\.obsidian|\.git|\.openclaw|_bib-links)(\/|$)/;
+const EXCLUDE_ANY_DIR_RE = /(^|\/)(node_modules|\.yarn|bower_components)(\/|$)/;
 const CACHE_VERSION = 1;
 const IDLE_BATCH = 40;
+// iCloud / APFS on-demand materialization can briefly shift a file's mtime
+// without the content changing; a small tolerance avoids spurious re-indexes.
+const ICLOUD_MTIME_TOLERANCE_MS = 2000;
 
-export function shouldIndexPath(relPath: string): boolean {
+// Cache of checked absolute directory paths -> whether that component is a
+// symlink. Symlinked folders (e.g. project folders pointed into the vault)
+// pull in external content like node_modules READMEs that must not be indexed.
+const symlinkCache = new Map<string, boolean>();
+
+/**
+ * Returns true when any path component below the vault root (or the file
+ * itself) is a symlink, i.e. the file lives in a folder that was linked into
+ * the vault rather than stored in it. Such external folders (project dirs,
+ * node_modules, ...) are excluded from indexing.
+ */
+function pathTraversesSymlink(relPath: string, vaultRoot?: string): boolean {
+  let root = vaultRoot;
+  if (!root) {
+    try {
+      root = getVaultRoot();
+    } catch {
+      return false;
+    }
+  }
+  const parts = relPath.split('/');
+  let acc = root;
+  for (const part of parts) {
+    acc = path.join(acc, part);
+    if (symlinkCache.has(acc)) {
+      if (symlinkCache.get(acc)) return true;
+      continue;
+    }
+    let isLink = false;
+    try {
+      isLink = fs.lstatSync(acc).isSymbolicLink();
+    } catch {
+      // Missing / inaccessible path: treat as a regular file.
+    }
+    symlinkCache.set(acc, isLink);
+    if (isLink) return true;
+  }
+  return false;
+}
+
+export function shouldIndexPath(relPath: string, vaultRoot?: string): boolean {
   if (!relPath.toLowerCase().endsWith('.md')) return false;
   if (EXCLUDE_DIR_RE.test(relPath)) return false;
+  if (EXCLUDE_ANY_DIR_RE.test(relPath)) return false;
   if (relPath.startsWith('.') || relPath.indexOf('/.') >= 0) return false;
+  if (pathTraversesSymlink(relPath, vaultRoot)) return false;
   return true;
 }
 
 export function isLiteraturePath(outputPath: string, relPath: string): boolean {
   return relPath.startsWith(outputPath + '/') && relPath.endsWith('.md');
+}
+
+/**
+ * Decide whether a previously-indexed document needs re-indexing based on
+ * stat metadata. A pure mtime/size comparison is too strict for iCloud:
+ * on-demand materialization can touch the mtime (and occasionally report
+ * size 0 for not-yet-downloaded placeholders) without content changes.
+ * - Missing meta or a size change => re-index (real edits usually change size).
+ * - Size unchanged but mtime shifted by less than the tolerance => keep.
+ * - Size unchanged but mtime shifted by more => re-index (preserves edits that
+ *   rewrite the same byte count).
+ */
+export function docChanged(
+  meta: { mtime: number; size: number } | null | undefined,
+  stat: { mtime: number; size: number }
+): boolean {
+  if (!meta) return true;
+  if (meta.size !== stat.size) return true;
+  if (stat.size === 0) return true;
+  return Math.abs(stat.mtime - meta.mtime) > ICLOUD_MTIME_TOLERANCE_MS;
 }
 
 export interface IndexProgress {
@@ -112,7 +178,7 @@ export class RagIndexer {
       for (let i = 0; i < files.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         const f = files[i];
-        this.indexFile(f);
+        await this.indexFile(f);
         onProgress?.({ done: i + 1, total: files.length, path: f.path });
       }
 
@@ -151,14 +217,14 @@ export class RagIndexer {
           continue;
         }
         const meta = this.index.documents.get(docId);
-        if (meta && (meta.mtime !== f.stat.mtime || meta.size !== f.stat.size)) {
+        if (meta && docChanged(meta, f.stat)) {
           changed.push(f);
         }
       }
 
       for (let i = 0; i < changed.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
-        this.indexFile(changed[i]);
+        await this.indexFile(changed[i]);
         onProgress?.({ done: i + 1, total: changed.length, path: changed[i].path });
       }
 
@@ -171,10 +237,11 @@ export class RagIndexer {
     }
   }
 
-  private indexFile(f: TFile): void {
+  private async indexFile(f: TFile): Promise<void> {
     try {
-      const abs = path.join(getVaultRoot(), f.path);
-      const content = fs.readFileSync(abs, 'utf-8');
+      // Use Obsidian's native read so iCloud on-demand files are handled
+      // correctly (direct fs.readFileSync blocks on download / may ENOENT).
+      const content = await this.app.vault.cachedRead(f);
       const literature = this.isLiteraturePath(f.path);
       const extra: Partial<RagDocMeta> = {
         mtime: f.stat.mtime,
