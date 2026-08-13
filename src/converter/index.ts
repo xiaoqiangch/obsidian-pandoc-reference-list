@@ -1,9 +1,8 @@
 import { getVaultRoot, debugLog } from '../helpers';
 import { ConversionStateManager, ConversionState } from './conversionState';
-import { renderPdfPages, getPdfPageCount, RenderedPage, ExtractedImage } from './pdfRenderer';
+import { getPdfPageCount } from './pdfRenderer';
 import { parseEpub, htmlToMarkdown } from './epubParser';
-import { convertImageToMarkdown, convertTextToMarkdown, extractReferencesToBib, extractAllReferencesToBib, LlmConvertSettings } from './llmConverter';
-import { convertPdfWithMineru, MineruConvertSettings } from './mineruConverter';
+import { convertPdfWithMineruAuto, MineruConvertSettings } from './mineruConverter';
 import { markdownReferencesToBibtex } from './bibtexConverter';
 import { PartialCSLEntry } from '../bib/types';
 import { writeLayoutFile } from '../rag/layout';
@@ -13,13 +12,9 @@ const path = require('path');
 
 const PAGE_MARKER_RE = /<!--\s*PAGE:(\d+)\s*-->/g;
 
-export type ConvertEngine = 'mineru' | 'llm';
-
 export interface ConvertSettings {
   outputPath: string;
-  engine?: ConvertEngine;
-  llm: LlmConvertSettings;
-  mineru?: MineruConvertSettings;
+  mineru: MineruConvertSettings;
 }
 
 export interface ConvertProgress {
@@ -134,7 +129,7 @@ export async function convertToMarkdown(
 
   try {
     if (attachmentType === 'pdf') {
-      await convertPdf(entry, attachmentPath, mdPath, bibPath, imagesDir, settings, state, stateManager, onProgress, startPage);
+      await convertPdf(entry, attachmentPath, mdPath, bibPath, imagesDir, settings, state, stateManager, onProgress);
     } else {
       await convertEpub(entry, attachmentPath, mdPath, bibPath, imagesDir, settings, state, stateManager, onProgress, startPage);
     }
@@ -182,101 +177,19 @@ async function convertPdf(
   settings: ConvertSettings,
   state: ConversionState,
   stateManager: ConversionStateManager,
-  onProgress: ProgressCallback | undefined,
-  startPage: number
+  onProgress: ProgressCallback | undefined
 ) {
-  const engine = settings.engine || 'mineru';
-
-  if (engine === 'mineru') {
-    await convertPdfWithMineruBranch(
-      entry,
-      pdfPath,
-      mdPath,
-      bibPath,
-      imagesDir,
-      settings,
-      state,
-      stateManager,
-      onProgress
-    );
-    return;
-  }
-
-  const titleHeader = buildTitleHeader(entry);
-  let mdContent = '';
-
-  if (startPage === 1) {
-    mdContent = titleHeader + '\n\n';
-  } else {
-    if (fs.existsSync(mdPath)) {
-      mdContent = fs.readFileSync(mdPath, 'utf-8');
-    } else {
-      mdContent = titleHeader + '\n\n';
-    }
-  }
-
-  const existingPageMarkers = new Set<number>();
-  let match;
-  PAGE_MARKER_RE.lastIndex = 0;
-  while ((match = PAGE_MARKER_RE.exec(mdContent)) !== null) {
-    existingPageMarkers.add(parseInt(match[1]));
-  }
-
-  const pages: RenderedPage[] = [];
-  const allPages = await renderPdfPages(pdfPath, imagesDir, (current, total) => {
-    onProgress?.({
-      citekey: entry.id,
-      currentPage: current,
-      totalPages: total,
-      status: 'in_progress',
-      message: `Rendering PDF page ${current}/${total}...`,
-    });
-  });
-
-  for (const page of allPages) {
-    if (page.pageNumber < startPage || existingPageMarkers.has(page.pageNumber)) {
-      debugLog('Converter', 'Skipping already converted page', { page: page.pageNumber });
-      continue;
-    }
-    pages.push(page);
-  }
-
-  if (pages.length === 0) {
-    debugLog('Converter', 'No pages to convert, already done', { citekey: entry.id });
-  }
-
-  for (const page of pages) {
-    onProgress?.({
-      citekey: entry.id,
-      currentPage: page.pageNumber,
-      totalPages: state.totalPages,
-      status: 'in_progress',
-      message: `Converting page ${page.pageNumber}/${state.totalPages}...`,
-    });
-
-    const pageMd = await convertImageToMarkdown(
-      page.imageDataUrl,
-      settings.llm,
-      `page ${page.pageNumber} of ${state.totalPages}`
-    );
-
-    const finalMd = replaceImagePlaceholders(pageMd, page.extractedImages, settings.outputPath, entry.id);
-
-    mdContent += `<!-- PAGE:${page.pageNumber} -->\n${finalMd}\n\n`;
-
-    fs.writeFileSync(mdPath, mdContent, 'utf-8');
-
-    state.convertedPages = page.pageNumber;
-    stateManager.update(entry.id, { convertedPages: page.pageNumber });
-
-    debugLog('Converter', 'Page converted and saved', { page: page.pageNumber });
-  }
-
-  mdContent = mdContent.replace(new RegExp(PAGE_MARKER_RE.source, 'g'), '').trim();
-  mdContent = titleHeader + '\n\n' + mdContent;
-  fs.writeFileSync(mdPath, mdContent, 'utf-8');
-
-  await extractAndSaveBib(mdContent, bibPath, settings);
+  await convertPdfWithMineruBranch(
+    entry,
+    pdfPath,
+    mdPath,
+    bibPath,
+    imagesDir,
+    settings,
+    state,
+    stateManager,
+    onProgress
+  );
 }
 
 async function convertPdfWithMineruBranch(
@@ -293,7 +206,7 @@ async function convertPdfWithMineruBranch(
   const titleHeader = buildTitleHeader(entry);
   const imageRelativePrefix = `images/${entry.id}`;
 
-  const result = await convertPdfWithMineru(
+  const { result, backend } = await convertPdfWithMineruAuto(
     pdfPath,
     imagesDir,
     imageRelativePrefix,
@@ -323,11 +236,12 @@ async function convertPdfWithMineruBranch(
 
   debugLog('Converter', 'MinerU conversion saved', {
     citekey: entry.id,
+    backend,
     mdLength: mdContent.length,
     imageCount: result.imageCount,
   });
 
-  await extractAndSaveBib(mdContent, bibPath, settings);
+  await extractAndSaveBib(mdContent, bibPath);
 }
 
 async function convertEpub(
@@ -385,24 +299,7 @@ async function convertEpub(
 
     const chapterMd = htmlToMarkdown(chapters[i].html);
 
-    let finalMd = chapterMd;
-    try {
-      const llmMd = await convertTextToMarkdown(
-        chapterMd,
-        settings.llm,
-        `chapter ${chapterNum} (${chapters[i].title}) of ${chapters.length}`
-      );
-      if (llmMd && llmMd.trim().length > 0) {
-        finalMd = llmMd;
-      }
-    } catch (e: any) {
-      debugLog('Converter', 'LLM conversion failed for chapter, using raw HTML-to-MD', {
-        chapter: chapterNum,
-        error: e.message,
-      });
-    }
-
-    mdContent += `<!-- PAGE:${chapterNum} -->\n## ${chapters[i].title}\n\n${finalMd}\n\n`;
+    mdContent += `<!-- PAGE:${chapterNum} -->\n## ${chapters[i].title}\n\n${chapterMd}\n\n`;
 
     fs.writeFileSync(mdPath, mdContent, 'utf-8');
 
@@ -414,36 +311,13 @@ async function convertEpub(
   mdContent = titleHeader + '\n\n' + mdContent;
   fs.writeFileSync(mdPath, mdContent, 'utf-8');
 
-  await extractAndSaveBib(mdContent, bibPath, settings);
+  await extractAndSaveBib(mdContent, bibPath);
 }
 
-async function extractAndSaveBib(mdContent: string, bibPath: string, settings: ConvertSettings) {
+async function extractAndSaveBib(mdContent: string, bibPath: string) {
   try {
     // Local deterministic conversion - always works without an LLM key.
-    const localBib = markdownReferencesToBibtex(mdContent);
-    let bibContent = localBib;
-
-    // When an LLM key is available, prefer the LLM which can also recover
-    // footnote (页下注) citations scattered throughout the document.
-    if (settings.llm.apiKey) {
-      const llmBib = await extractAllReferencesToBib(mdContent, settings.llm);
-      if (llmBib && llmBib.trim().length > 0) {
-        const llmCount = countBibEntries(llmBib);
-        const localCount = countBibEntries(localBib);
-        debugLog('Converter', 'Bib candidates', { llmCount, localCount });
-        if (llmCount >= localCount || localCount === 0) {
-          bibContent = llmBib;
-        }
-      }
-    }
-
-    // Legacy fallback: LLM-based extraction of only the trailing references section.
-    if (!bibContent.trim() && settings.llm.apiKey) {
-      const llmBib = await extractReferencesToBib(mdContent, settings.llm);
-      if (llmBib && llmBib.trim().length > 0) {
-        bibContent = llmBib;
-      }
-    }
+    const bibContent = markdownReferencesToBibtex(mdContent);
 
     if (bibContent && bibContent.trim().length > 0) {
       fs.writeFileSync(bibPath, bibContent, 'utf-8');
@@ -454,31 +328,6 @@ async function extractAndSaveBib(mdContent: string, bibPath: string, settings: C
   } catch (e: any) {
     debugLog('Converter', 'Bib extraction failed', { error: e.message });
   }
-}
-
-function countBibEntries(bibtex: string): number {
-  if (!bibtex) return 0;
-  const matches = bibtex.match(/@(\w+)\s*\{/g);
-  return matches ? matches.length : 0;
-}
-
-function replaceImagePlaceholders(
-  md: string,
-  extractedImages: ExtractedImage[],
-  outputPath: string,
-  citekey: string
-): string {
-  if (extractedImages.length === 0) return md;
-
-  let imgIdx = 0;
-  const placeholderRe = /!\[([^\]]*)\]\(image-placeholder\)/g;
-  return md.replace(placeholderRe, (match, desc) => {
-    if (imgIdx < extractedImages.length) {
-      const img = extractedImages[imgIdx++];
-      return `![${desc}](${outputPath}/images/${citekey}/${img.fileName})`;
-    }
-    return `*${desc || 'Figure'}*`;
-  });
 }
 
 function buildTitleHeader(entry: PartialCSLEntry): string {

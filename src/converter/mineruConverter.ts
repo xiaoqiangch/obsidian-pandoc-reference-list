@@ -6,8 +6,10 @@ import { buildPageChunks, computeMaxAttempts, mergeChunkResults, MINERU_FOOTNOTE
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const https = require('https');
+const { spawn } = require('child_process');
 
 const MINERU_BASE = 'https://mineru.net/api/v4';
 const MAX_POLL_ATTEMPTS = 300;
@@ -20,7 +22,6 @@ const DAILY_PAGE_QUOTA = 1000;
 
 export interface MineruConvertSettings {
   apiToken: string;
-  modelVersion?: string;
 }
 
 export interface MineruConvertResult {
@@ -29,6 +30,16 @@ export interface MineruConvertResult {
   footnotes: string;
   layout: RawLayoutBlock[];
 }
+
+export interface MineruAutoResult {
+  result: MineruConvertResult;
+  backend: 'cloud' | 'local';
+}
+
+// Hardcoded MinerU options (removed from the settings panel as redundant).
+const MINERU_MODEL_VERSION = 'vlm';
+const LOCAL_MINERU_PATH = 'mineru';
+const LOCAL_MINERU_DEVICE = 'mps';
 
 type MineruProgressFn = (current: number, total: number, message?: string) => void;
 
@@ -62,12 +73,12 @@ export async function convertPdfWithMineru(
   settings: MineruConvertSettings,
   onProgress?: MineruProgressFn
 ): Promise<MineruConvertResult> {
+  const modelVersion = MINERU_MODEL_VERSION;
+  const fileName = path.basename(pdfPath);
+
   if (!settings.apiToken) {
     throw new Error('Please configure the MinerU API token in settings.');
   }
-
-  const modelVersion = settings.modelVersion || 'vlm';
-  const fileName = path.basename(pdfPath);
 
   debugLog('MineruConverter', 'Starting MinerU conversion', { fileName, modelVersion });
 
@@ -147,6 +158,45 @@ export async function convertPdfWithMineru(
   return extracted;
 }
 
+/**
+ * Convert a PDF preferring the cloud MinerU API; when the cloud backend is
+ * unavailable (no API token, quota exhausted, or any API error), fall back to
+ * a locally-installed mineru CLI. Returns which backend produced the result so
+ * callers can surface the right message.
+ */
+export async function convertPdfWithMineruAuto(
+  pdfPath: string,
+  imagesDir: string,
+  imageRelativePrefix: string,
+  settings: MineruConvertSettings,
+  onProgress?: MineruProgressFn
+): Promise<MineruAutoResult> {
+  if (settings.apiToken) {
+    try {
+      const result = await convertPdfWithMineru(pdfPath, imagesDir, imageRelativePrefix, settings, onProgress);
+      return { result, backend: 'cloud' };
+    } catch (e: any) {
+      debugLog('MineruConverter', 'Cloud MinerU failed, falling back to local', {
+        error: e?.message,
+      });
+      onProgress?.(0, 1, '云端 MinerU 不可用，正在回退到本地 MinerU 解析...');
+    }
+  } else {
+    debugLog('MineruConverter', 'No cloud API token configured; using local MinerU');
+    onProgress?.(0, 1, '未配置云端 MinerU Token，使用本地 MinerU 解析...');
+  }
+
+  const result = await convertPdfWithLocalMineru(
+    pdfPath,
+    imagesDir,
+    imageRelativePrefix,
+    LOCAL_MINERU_PATH,
+    LOCAL_MINERU_DEVICE,
+    onProgress
+  );
+  return { result, backend: 'local' };
+}
+
 async function runMineruTask(
   pdfPath: string,
   imagesDir: string,
@@ -188,6 +238,227 @@ async function runMineruTask(
   debugLog('MineruConverter', 'MinerU result zip preserved', { zipPath });
 
   return extracted;
+}
+
+// ---- Local mineru CLI backend ----
+
+const LOCAL_CONVERT_TIMEOUT_MS = 3600 * 1000;
+
+/**
+ * Convert a PDF using a locally-installed mineru CLI (pipeline backend).
+ *
+ * The CLI runs against a temp output dir; afterwards the generated markdown,
+ * content_list and images are ingested with the same post-processing as the
+ * cloud result zip (footnotes, layout blocks, image path rewriting), so the
+ * returned MineruConvertResult is identical in shape.
+ */
+async function convertPdfWithLocalMineru(
+  pdfPath: string,
+  imagesDir: string,
+  imageRelativePrefix: string,
+  mineruPath: string,
+  device: string,
+  onProgress?: MineruProgressFn
+): Promise<MineruConvertResult> {
+  const resolvedPath = expandHome(mineruPath || 'mineru');
+  const fileName = path.basename(pdfPath);
+  const dataId = fileName.replace(/\.[^.]+$/, '');
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mineru-local-'));
+  onProgress?.(0, 1, `本地 MinerU 正在解析（pipeline / ${device}）...`);
+
+  debugLog('MineruConverter', 'Starting local MinerU conversion', {
+    fileName,
+    mineruPath: resolvedPath,
+    device,
+    tmpRoot,
+  });
+
+  await runLocalMineru(resolvedPath, pdfPath, tmpRoot, device);
+
+  const result = ingestLocalOutput(tmpRoot, imagesDir, imageRelativePrefix, dataId);
+
+  debugLog('MineruConverter', 'Local MinerU conversion completed', {
+    mdLength: result.mdContent.length,
+    imageCount: result.imageCount,
+    footnoteLength: result.footnotes?.length || 0,
+    tmpRoot,
+  });
+
+  return result;
+}
+
+function expandHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function runLocalMineru(mineruPath: string, pdfPath: string, outRoot: string, device: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = ['-p', pdfPath, '-o', outRoot, '-d', device, '-b', 'pipeline'];
+    let stdout = '';
+    let stderr = '';
+
+    let child: any;
+    try {
+      child = spawn(mineruPath, args, {
+        env: {
+          ...process.env,
+          // Local parsing needs no network; keep the auto-started local API on
+          // loopback so proxy settings cannot break it.
+          NO_PROXY: '127.0.0.1,localhost',
+          no_proxy: '127.0.0.1,localhost',
+        },
+      });
+    } catch (e: any) {
+      reject(new Error(`无法启动本地 MinerU（${mineruPath}）: ${e.message}`));
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+      reject(
+        new Error(`本地 MinerU 解析超时（超过 ${Math.round(LOCAL_CONVERT_TIMEOUT_MS / 60000)} 分钟）。`)
+      );
+    }, LOCAL_CONVERT_TIMEOUT_MS);
+
+    child.stdout.on('data', (d: any) => {
+      stdout += d;
+    });
+    child.stderr.on('data', (d: any) => {
+      stderr += d;
+    });
+    child.on('error', (e: any) => {
+      clearTimeout(timer);
+      reject(new Error(`本地 MinerU 进程错误: ${e.message}`));
+    });
+    child.on('close', (code: number) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`本地 MinerU 解析失败（exit ${code}）：${tailLog(stderr || stdout)}`));
+    });
+  });
+}
+
+function tailLog(text: string, max = 800): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  return '…' + t.slice(t.length - max);
+}
+
+function walkFiles(dir: string, out: string[] = []): string[] {
+  let entries: any[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkFiles(p, out);
+    else out.push(p);
+  }
+  return out;
+}
+
+function findMarkdown(root: string, dataId: string): string | null {
+  const candidates = walkFiles(root).filter((f) => /\.md$/i.test(f));
+  if (candidates.length === 0) return null;
+  const exact = candidates.find((f) => path.basename(f, '.md') === dataId);
+  if (exact) return exact;
+  const full = candidates.find((f) => path.basename(f) === 'full.md');
+  if (full) return full;
+  return candidates.find((f) => !path.basename(f).startsWith('_')) || candidates[0];
+}
+
+function findContentList(root: string): any {
+  const files = walkFiles(root);
+  const v1 = files.find((f) => /_content_list\.json$/i.test(f));
+  const v2 = files.find((f) => /_content_list_v2\.json$/i.test(f));
+  const clPath = v1 || v2;
+  if (!clPath) return null;
+  try {
+    return JSON.parse(fs.readFileSync(clPath, 'utf-8'));
+  } catch (e) {
+    debugLog('MineruConverter', 'Failed to parse local content_list.json', { clPath, error: e });
+    return null;
+  }
+}
+
+/**
+ * Read the local mineru output tree and convert it into the same
+ * MineruConvertResult produced from the cloud result zip: md content, copied
+ * images with rewritten references, footnotes and normalized layout blocks.
+ */
+function ingestLocalOutput(
+  tmpRoot: string,
+  imagesDir: string,
+  imageRelativePrefix: string,
+  dataId: string
+): MineruConvertResult {
+  const mdFile = findMarkdown(tmpRoot, dataId);
+  if (!mdFile) {
+    throw new Error('本地 MinerU 未生成 Markdown 结果。');
+  }
+  const subDir = path.dirname(mdFile);
+
+  let mdContent = fs.readFileSync(mdFile, 'utf-8');
+  const contentList = findContentList(subDir);
+
+  let imageCount = 0;
+  const imgSrcDir = path.join(subDir, 'images');
+  const copied: string[] = [];
+  if (fs.existsSync(imgSrcDir)) {
+    for (const f of walkFiles(imgSrcDir)) {
+      const rel = path.relative(imgSrcDir, f);
+      const dest = path.join(imagesDir, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(f, dest);
+      imageCount++;
+      copied.push(rel);
+    }
+  }
+
+  // Debug helper: dump the local output tree and detected blocks so
+  // reference-loss issues can be diagnosed from the images directory.
+  try {
+    const blocks: ContentBlock[] = [];
+    collectContentBlocks(contentList, undefined, undefined, undefined, blocks);
+    const typeCount: Record<string, number> = {};
+    for (const b of blocks) typeCount[b.type] = (typeCount[b.type] || 0) + 1;
+    const dumpLines: string[] = ['=== local output files ==='];
+    dumpLines.push(...walkFiles(subDir).map((f) => path.relative(subDir, f)));
+    dumpLines.push('=== content_list block types ===');
+    dumpLines.push(JSON.stringify(typeCount));
+    dumpLines.push('=== footnote-type blocks ===');
+    for (const b of blocks) {
+      if (MINERU_FOOTNOTE_TYPES.has(b.type)) {
+        dumpLines.push(`[p${b.pageIdx}][${b.type}] ${b.text.slice(0, 200)}`);
+      }
+    }
+    fs.writeFileSync(path.join(imagesDir, '_mineru_debug.txt'), dumpLines.join('\n'), 'utf-8');
+  } catch (e) {
+    debugLog('MineruConverter', 'Debug dump failed', { error: e });
+  }
+
+  const footnotes = buildFootnotesMarkdown(mdContent, contentList);
+
+  if (imageCount > 0) {
+    mdContent = mdContent.replace(/\]\((?!(?:https?:)?\/\/)images?\//gi, `](${imageRelativePrefix}/`);
+    mdContent = mdContent.replace(/src="images?\//gi, `src="${imageRelativePrefix}/`);
+  }
+
+  const layout = normalizeLayout(contentList);
+
+  return { mdContent, imageCount, footnotes, layout };
 }
 
 async function getUploadUrls(

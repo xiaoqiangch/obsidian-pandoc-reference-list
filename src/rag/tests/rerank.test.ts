@@ -153,19 +153,18 @@ describe('parseRerankResponse', () => {
 });
 
 describe('resolveRerankSettings', () => {
-  test('hardcoded override wins over caller settings', () => {
-    const out = resolveRerankSettings({
-      apiUrl: 'http://localhost:8081/v1',
-      apiKey: '',
-      model: 'jina-reranker-v3',
-      topN: 5,
-      minScore: 0.5,
-    });
+  test('hardcoded Aliyun service wins; apiKey comes from user settings', () => {
+    const out = resolveRerankSettings({ apiKey: 'sk-user' });
     expect(out.apiUrl).toContain('dashscope.aliyuncs.com');
-    expect(out.apiKey).toBeTruthy();
+    expect(out.apiKey).toBe('sk-user');
     expect(out.model).toBe('qwen3-rerank');
     expect(out.topN).toBe(20);
     expect(out.minScore).toBe(0);
+  });
+
+  test('empty apiKey is passed through', () => {
+    const out = resolveRerankSettings({ apiKey: '' });
+    expect(out.apiKey).toBe('');
   });
 });
 

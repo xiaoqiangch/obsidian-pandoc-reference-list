@@ -155,14 +155,14 @@ describe('SemanticIndexer bounded auto runs', () => {
     // MAX_AUTO_RUN_FILES batch per MIN_AUTO_RUN_INTERVAL_MS) instead of all at
     // once — a one-shot full drain pinned the embedding service / CPU.
     const app = makeApp();
-    app.vault.getMarkdownFiles = () => makeManyFiles(25);
+    app.vault.getMarkdownFiles = () => makeManyFiles(60);
     app.vault.cachedRead = async () => 'content x'.repeat(50);
 
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
     await indexer.incrementalUpdate(undefined, { auto: true });
     expect(indexer.building).toBe(false);
     // Only the first paced batch is embedded; the rest is left for follow-ups.
-    expect(indexer.index.docCount).toBeLessThan(25);
+    expect(indexer.index.docCount).toBeLessThan(60);
     expect(indexer.index.docCount).toBeGreaterThan(0);
     indexer.destroy();
   });

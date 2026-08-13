@@ -41,15 +41,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   attachmentDirectory: '',
   browserDownloadDirectory: '',
   convertOutputPath: 'literature',
-  convertModelApiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-  convertModelApiKey: '',
-  convertModelName: 'doubao-seed-2-0-lite-260428',
-  convertEngine: 'mineru',
   mineruApiToken: '',
-  mineruModelVersion: 'vlm',
-  mineruBackend: 'cloud',
-  mineruLocalPath: '',
-  mineruLocalDevice: 'mps',
   enableRagSearch: true,
   ragSnippetLength: 180,
   ragMinTermCoverage: 1,
@@ -64,12 +56,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   semanticChunkOverlap: 120,
   semanticTopK: 20,
   semanticMinScore: 0.3,
-  rerankEnabled: true,
-  rerankApiUrl: 'https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank',
   rerankApiKey: '',
-  rerankModel: 'qwen3-rerank',
-  rerankTopN: 20,
-  rerankMinScore: 0,
   rerankCandidateCount: 30,
 };
 
@@ -105,18 +92,7 @@ export interface ReferenceListSettings {
   attachmentDirectory: string;
   browserDownloadDirectory: string;
   convertOutputPath: string;
-  convertModelApiUrl: string;
-  convertModelApiKey: string;
-  convertModelName: string;
-  convertEngine: 'mineru' | 'llm';
   mineruApiToken: string;
-  mineruModelVersion: string;
-  /** Where MinerU parses PDFs: 'cloud' (mineru.net API) or 'local' (local CLI). */
-  mineruBackend?: 'cloud' | 'local';
-  /** Path to the local mineru binary (used when mineruBackend === 'local'). */
-  mineruLocalPath?: string;
-  /** Inference device for the local mineru CLI. */
-  mineruLocalDevice?: 'mps' | 'cpu';
   enableRagSearch?: boolean;
   ragSnippetLength?: number;
   ragMinTermCoverage?: number;
@@ -135,12 +111,7 @@ export interface ReferenceListSettings {
   semanticChunkOverlap?: number;
   semanticTopK?: number;
   semanticMinScore?: number;
-  rerankEnabled?: boolean;
-  rerankApiUrl?: string;
   rerankApiKey?: string;
-  rerankModel?: string;
-  rerankTopN?: number;
-  rerankMinScore?: number;
   rerankCandidateCount?: number;
 }
 
@@ -600,121 +571,14 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(t('Conversion engine'))
-      .setDesc(t('MinerU (default) handles images, formulas, tables and references accurately. The LLM vision model is kept as a backup.'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('mineru', t('MinerU (Recommended, default)'))
-          .addOption('llm', t('LLM vision model (backup)'))
-          .setValue(this.plugin.settings.convertEngine || 'mineru')
-          .onChange((value: 'mineru' | 'llm') => {
-            this.plugin.settings.convertEngine = value;
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
       .setName(t('MinerU API Token'))
-      .setDesc(t('API token for MinerU PDF conversion. Create it on the API Management page at mineru.net.'))
+      .setDesc(t('API token for MinerU PDF conversion. Create it on the API Management page at mineru.net. When the cloud quota is unavailable, conversion automatically falls back to the locally-installed mineru CLI.'))
       .addText((text) =>
         text
           .setPlaceholder('mineru_...')
           .setValue(this.plugin.settings.mineruApiToken)
           .onChange((value) => {
             this.plugin.settings.mineruApiToken = value.trim();
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('MinerU model version'))
-      .setDesc(t('MinerU model version. Defaults to "vlm" which handles formulas, tables, OCR and code well.'))
-      .addText((text) =>
-        text
-          .setPlaceholder('vlm')
-          .setValue(this.plugin.settings.mineruModelVersion || 'vlm')
-          .onChange((value) => {
-            this.plugin.settings.mineruModelVersion = value.trim();
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('MinerU backend'))
-      .setDesc(t('Cloud uses the mineru.net API (requires an API token). Local runs a locally-installed mineru CLI; PDFs never leave your machine.'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('cloud', t('MinerU cloud API'))
-          .addOption('local', t('Local mineru CLI'))
-          .setValue(this.plugin.settings.mineruBackend || 'cloud')
-          .onChange((value: 'cloud' | 'local') => {
-            this.plugin.settings.mineruBackend = value;
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('Local mineru path'))
-      .setDesc(t('Absolute path to the local mineru binary, e.g. ~/mineru/.venv/bin/mineru. Used when the backend is "Local".'))
-      .addText((text) =>
-        text
-          .setPlaceholder('~/mineru/.venv/bin/mineru')
-          .setValue(this.plugin.settings.mineruLocalPath || '')
-          .onChange((value) => {
-            this.plugin.settings.mineruLocalPath = value.trim();
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('Local mineru device'))
-      .setDesc(t('Inference device for the local mineru CLI. MPS uses the Apple GPU; CPU is slower but uses no GPU memory.'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('mps', 'MPS (Apple GPU)')
-          .addOption('cpu', 'CPU')
-          .setValue(this.plugin.settings.mineruLocalDevice || 'mps')
-          .onChange((value: 'mps' | 'cpu') => {
-            this.plugin.settings.mineruLocalDevice = value;
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('Conversion model API URL'))
-      .setDesc(t('OpenAI-compatible API URL for the LLM vision model (backup engine). Defaults to Volcengine ARK API.'))
-      .addText((text) =>
-        text
-          .setPlaceholder('https://ark.cn-beijing.volces.com/api/v3')
-          .setValue(this.plugin.settings.convertModelApiUrl)
-          .onChange((value) => {
-            this.plugin.settings.convertModelApiUrl = value;
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('Conversion model API Key'))
-      .setDesc(t('API key for the LLM vision model (backup engine). Leave empty to use DeepSeek API Key.'))
-      .addText((text) =>
-        text
-          .setPlaceholder('sk-...')
-          .setValue(this.plugin.settings.convertModelApiKey)
-          .onChange((value) => {
-            this.plugin.settings.convertModelApiKey = value;
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t('Conversion model name'))
-      .setDesc(t('Model name for the LLM vision model (backup engine). Supports any OpenAI-compatible vision model.'))
-      .addText((text) =>
-        text
-          .setPlaceholder('doubao-seed-2-0-lite-260428')
-          .setValue(this.plugin.settings.convertModelName)
-          .onChange((value) => {
-            this.plugin.settings.convertModelName = value;
             this.plugin.saveSettings();
           })
       );
@@ -1071,52 +935,17 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     }
     this.batchStatusTimer = window.setInterval(renderBatchStats, 500);
 
-    new Setting(containerEl)
-      .setName('交叉编码重排序（Rerank）')
-      .setDesc('启用后，检索时把全文命中与语义命中的候选片段合并，交给交叉编码重排模型（默认本地 Docker 的 jina-reranker-v3）统一打分排序，输出“重排序命中”分组。重排服务不可用时会自动回退到普通全文/语义分组。')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(!!this.plugin.settings.rerankEnabled)
-          .onChange((value) => {
-            this.plugin.settings.rerankEnabled = value;
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName('重排序 API 地址')
-      .setDesc('本地 Docker：http://localhost:8081/v1（自动追加 /rerank）；阿里云百炼 OpenAI 兼容：https://dashscope.aliyuncs.com/compatible-mode/v1（自动追加 /reranks）；阿里云百炼原生：https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank（完整端点，input 包装体）。')
-      .addText((text) =>
-        text
-          .setPlaceholder('https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank')
-          .setValue(this.plugin.settings.rerankApiUrl || '')
-          .onChange((value) => {
-            this.plugin.settings.rerankApiUrl = value;
-            this.plugin.saveSettings();
-          })
-      );
+    new Setting(containerEl).setName('交叉编码重排序（Rerank）').setHeading();
 
     new Setting(containerEl)
       .setName('重排序 API Key')
-      .setDesc('云端服务需要（如阿里云百炼）；本地 Docker 服务可留空。')
+      .setDesc('阿里云百炼（DashScope）API Key。服务地址、模型等已内置硬编码，无需配置。')
       .addText((text) =>
         text
           .setPlaceholder('sk-...')
           .setValue(this.plugin.settings.rerankApiKey || '')
           .onChange((value) => {
             this.plugin.settings.rerankApiKey = value.trim();
-            this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName('重排序模型')
-      .addText((text) =>
-        text
-          .setPlaceholder('qwen3-rerank')
-          .setValue(this.plugin.settings.rerankModel || '')
-          .onChange((value) => {
-            this.plugin.settings.rerankModel = value.trim();
             this.plugin.saveSettings();
           })
       );
@@ -1134,20 +963,6 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
-      .setName('重排序最低得分')
-      .setDesc('过滤掉重排得分低于此值的片段（0 = 不过滤）。')
-      .addSlider((slider) =>
-        slider
-          .setLimits(0, 0.9, 0.05)
-          .setValue(this.plugin.settings.rerankMinScore ?? 0)
-          .onChange((value) => {
-            this.plugin.settings.rerankMinScore = value;
-            this.plugin.saveSettings();
-          })
-          .setDynamicTooltip()
-      );
-
     const rerankTest = new Setting(containerEl).setName('重排序连接测试');
       rerankTest.addButton((button) =>
       button.setButtonText('测试重排序').onClick(async () => {
@@ -1156,11 +971,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             '数字经济的增长效应',
             ['数字经济对区域增长的影响研究。', '二十四桥明月夜，玉人何处教吹箫。', 'climate change and agriculture'],
             resolveRerankSettings({
-              apiUrl: this.plugin.settings.rerankApiUrl || '',
               apiKey: this.plugin.settings.rerankApiKey || '',
-              model: this.plugin.settings.rerankModel || '',
-              topN: this.plugin.settings.rerankTopN || 20,
-              minScore: 0,
             })
           );
           new Notice(`重排序连接正常（返回 ${n} 条）`);

@@ -83,7 +83,7 @@ async function remoteRequestJson(
   const param: RequestUrlParam = {
     url,
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   };
 

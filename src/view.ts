@@ -307,28 +307,47 @@ export class ReferenceListView extends ItemView {
       return;
     }
 
-    // Cross-encoder reranking: merge the full-text + semantic candidates and
-    // re-rank them. Falls back to the plain full-text / semantic groups when
-    // disabled or on any failure. The rerank service config (URL/key/model) is
-    // hardcoded via RERANK_OVERRIDE — no settings needed.
-    if (RERANK_OVERRIDE.enabled) {
-      const ok = await this.renderRerankedResults(container, seq);
-      if (ok) return;
-    }
-    if (seq !== undefined && seq !== this.renderSeq) return;
-
     const rag = this.plugin.ragIndexer;
     if (rag.index.docCount === 0) {
       container.createDiv({ cls: 'pane-empty', text: t('RAG index is being built...') });
       return;
     }
 
+    // Render the full-text and semantic groups immediately so the user sees
+    // results the moment they type. The cross-encoder rerank ("重排序命中")
+    // is slower (it re-reads candidates then calls the rerank service), so it
+    // is kicked off in the background and inserted only when ready — the panel
+    // must never sit blank waiting for the rerank network round-trip.
+    await this.renderFulltextResults(container, seq);
+    if (seq !== undefined && seq !== this.renderSeq) return;
+    if (this.plugin.settings.enableNativeSemantic) {
+      await this.renderNativeSemanticResults(container, query, seq);
+    }
+    if (seq !== undefined && seq !== this.renderSeq) return;
+
+    if (RERANK_OVERRIDE.enabled) {
+      this.renderRerankedResults(container, seq)
+        .then((ok) => {
+          if (ok && seq === this.renderSeq) this.updateGroupNav();
+        })
+        .catch(() => {});
+    }
+  }
+
+  /** Render the "正文命中" (full-text BM25) group. */
+  async renderFulltextResults(container: HTMLElement, seq?: number) {
+    const query = this.searchQuery.trim();
+    if (!query) return;
+    if (seq !== undefined && seq !== this.renderSeq) return;
+
+    const rag = this.plugin.ragIndexer;
+    if (rag.index.docCount === 0) return;
+
     const hits = rag.search(query, 60, this.plugin.settings.ragMinTermCoverage ?? 1);
-    const relevant = hits;
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });
     group.setAttr('data-rag-group', 'fulltext');
-    if (relevant.length === 0) {
+    if (hits.length === 0) {
       group.createDiv({ cls: 'pwc-rag-group-title', text: t('Full-text hits') });
       group.createDiv({ cls: 'pane-empty', text: t('No results found in vault.') });
       return;
@@ -345,7 +364,7 @@ export class ReferenceListView extends ItemView {
       terms: string[];
     }
     const results: DocHits[] = [];
-    for (const hit of relevant.slice(0, 30)) {
+    for (const hit of hits.slice(0, 30)) {
       const doc = hit.doc;
       let content = '';
       try {
@@ -392,10 +411,6 @@ export class ReferenceListView extends ItemView {
         hint: doc.literature,
       }, entries, terms);
     }
-
-    if (this.plugin.settings.enableNativeSemantic) {
-      await this.renderNativeSemanticResults(container, query, seq);
-    }
   }
 
   /** Terms used to locate positions / snippets: latin words + full CJK runs. */
@@ -406,9 +421,10 @@ export class ReferenceListView extends ItemView {
 
   /**
    * Merged cross-encoder rerank of full-text + semantic candidates against the
-   * local Docker jina-reranker-v3 service. Returns true when the "重排序命中"
-   * group was rendered (in which case the caller should skip the plain groups);
-   * returns false on any failure so the caller falls back to its default path.
+   * Aliyun DashScope qwen3-rerank service (hardcoded). Runs in the background
+   * after the plain full-text / semantic groups have been shown, and returns
+   * true only when the "重排序命中" group was rendered (the caller then reveals
+   * its nav icon); returns false on any failure so it simply stays hidden.
    */
   private async renderRerankedResults(
     container: HTMLElement,
@@ -426,7 +442,7 @@ export class ReferenceListView extends ItemView {
     const vaultRoot = getVaultRoot();
     const outputPath = settings.convertOutputPath || 'literature';
     const snippetLen = settings.ragSnippetLength || 180;
-    const candidateCount = RERANK_OVERRIDE.candidateCount || 30;
+    const candidateCount = settings.rerankCandidateCount || 30;
 
     interface Candidate {
       path: string;
@@ -544,11 +560,7 @@ export class ReferenceListView extends ItemView {
         query,
         candidates.map((c) => c.snippet),
         resolveRerankSettings({
-          apiUrl: settings.rerankApiUrl || '',
           apiKey: settings.rerankApiKey || '',
-          model: settings.rerankModel || '',
-          topN: settings.rerankTopN || 20,
-          minScore: settings.rerankMinScore ?? 0,
         })
       );
       reranked = results
@@ -603,6 +615,15 @@ export class ReferenceListView extends ItemView {
         terms
       );
     }
+
+    // The plain groups were already rendered before rerank was kicked off, so
+    // move this completed group above them to keep the highest-confidence
+    // results at the top of the list.
+    const anchor =
+      container.querySelector('[data-rag-group="fulltext"]') ||
+      container.querySelector('[data-rag-group="semantic"]');
+    if (anchor) container.insertBefore(group, anchor);
+
     return true;
   }
 
@@ -1638,21 +1659,6 @@ export class ReferenceListView extends ItemView {
   async startConversion(entry: PartialCSLEntry, attachmentPath: string) {
     const settings = this.plugin.settings;
     const convertOutputPath = settings.convertOutputPath || 'literature';
-    const engine = settings.convertEngine || 'mineru';
-
-    const apiUrl = settings.convertModelApiUrl || 'https://ark.cn-beijing.volces.com/api/v3';
-    const apiKey = settings.convertModelApiKey || settings.deepseekApiKey;
-    const modelName = settings.convertModelName || 'doubao-seed-2-0-lite-260428';
-
-    if (engine === 'mineru') {
-      if (!settings.mineruApiToken) {
-        new Notice(t('Please configure the MinerU API token in settings'));
-        return;
-      }
-    } else if (!apiKey) {
-      new Notice(t('Please configure conversion model settings'));
-      return;
-    }
 
     if (this.conversionProgress.has(entry.id) &&
         this.conversionProgress.get(entry.id)!.status === 'in_progress') {
@@ -1667,11 +1673,8 @@ export class ReferenceListView extends ItemView {
 
     const convertSettings = {
       outputPath: convertOutputPath,
-      engine,
-      llm: { apiUrl, apiKey, modelName },
       mineru: {
         apiToken: settings.mineruApiToken || '',
-        modelVersion: settings.mineruModelVersion || 'vlm',
       },
     };
 

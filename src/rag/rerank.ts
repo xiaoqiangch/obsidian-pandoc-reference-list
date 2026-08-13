@@ -13,26 +13,30 @@ export interface RerankSettings {
 
 /**
  * 硬编码的重排序配置（覆盖设置面板，个人使用无需在设置里再配置）。
- * 需要更换服务时直接改这里即可。
+ * 需要更换服务时直接改这里即可。API Key 与候选数仍由设置面板控制。
  */
-export const RERANK_OVERRIDE: RerankSettings & { enabled: boolean; candidateCount: number } = {
+export const RERANK_OVERRIDE: {
+  enabled: boolean;
+  apiUrl: string;
+  model: string;
+  topN: number;
+  minScore: number;
+} = {
   enabled: true,
   apiUrl: 'https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank',
-  apiKey: 'sk-ws-H.EERPXLI.gEa9.MEUCIQDKoSGpmI4kFbOd2EG0T00a4c5Cnk9oSgwj7zM3IgFwawIgMDFc3pmRh0MmwQvUEBnEmM14u96_9CUd0xlIp4VpMN4',
   model: 'qwen3-rerank',
   topN: 20,
   minScore: 0,
-  candidateCount: 30,
 };
 
-/** Apply the hardcoded rerank override on top of any caller-supplied settings. */
-export function resolveRerankSettings(user: RerankSettings): RerankSettings {
+/** Apply the hardcoded rerank override on top of the user-supplied API key. */
+export function resolveRerankSettings(user: Pick<RerankSettings, 'apiKey'>): RerankSettings {
   return {
-    apiUrl: RERANK_OVERRIDE.apiUrl || user.apiUrl,
-    apiKey: RERANK_OVERRIDE.apiKey !== '' ? RERANK_OVERRIDE.apiKey : user.apiKey,
-    model: RERANK_OVERRIDE.model || user.model,
-    topN: RERANK_OVERRIDE.topN ?? user.topN,
-    minScore: RERANK_OVERRIDE.minScore ?? user.minScore,
+    apiUrl: RERANK_OVERRIDE.apiUrl,
+    apiKey: user.apiKey || '',
+    model: RERANK_OVERRIDE.model,
+    topN: RERANK_OVERRIDE.topN,
+    minScore: RERANK_OVERRIDE.minScore,
   };
 }
 

@@ -15,13 +15,16 @@
  * already completed in the plugin are skipped and interrupted runs resume.
  *
  * Usage:
- *   node convert-all.cjs [--dry-run] [--limit N] [--engine mineru|llm] [--only a,b] [--start-from k] [--force]
+ *   node convert-all.cjs [--dry-run] [--limit N] [--only a,b] [--start-from k] [--force]
  *
  * Configuration is read from the Obsidian vault plugin data.json by default
  * (discovered under the vault root) and can be overridden via env:
  *   BIB_MANAGER_VAULT_ROOT  absolute vault root
  *   MINERU_API_TOKEN        MinerU token (falls back to data.json mineruApiToken)
  *   CONVERT_OUTPUT_PATH     default 'literature'
+ *
+ * PDFs prefer the MinerU cloud API and automatically fall back to the local
+ * mineru CLI when the cloud is unavailable.
  */
 import { setGlobalApp } from './obsidian-shim';
 import path from 'path';
@@ -62,12 +65,7 @@ interface VaultSettings {
   pathToBibliography?: string;
   bibliographyPaths?: string[];
   convertOutputPath?: string;
-  convertEngine?: string;
   mineruApiToken?: string;
-  mineruModelVersion?: string;
-  convertModelApiUrl?: string;
-  convertModelApiKey?: string;
-  convertModelName?: string;
   deepseekApiKey?: string;
   zoteroPort?: string;
   zoteroGroups?: { id: number; name: string }[];
@@ -115,7 +113,6 @@ async function loadSettings(vaultRoot: string): Promise<VaultSettings> {
 interface CliOptions {
   dryRun: boolean;
   limit?: number;
-  engine?: string;
   force: boolean;
   startFrom?: string;
   only?: string[];
@@ -127,7 +124,6 @@ function parseArgs(argv: string[]): CliOptions {
     const a = argv[i];
     if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--limit' || a === '-n') opts.limit = parseInt(argv[++i], 10);
-    else if (a === '--engine' || a === '-e') opts.engine = argv[++i];
     else if (a === '--force' || a === '-f') opts.force = true;
     else if (a === '--start-from') opts.startFrom = argv[++i];
     else if (a === '--only') opts.only = argv[++i].split(',');
@@ -194,7 +190,14 @@ async function main(): Promise<void> {
   // Apply env overrides before constructing the plugin-shaped object.
   if (process.env.MINERU_API_TOKEN) settings.mineruApiToken = process.env.MINERU_API_TOKEN;
   if (process.env.CONVERT_OUTPUT_PATH) settings.convertOutputPath = process.env.CONVERT_OUTPUT_PATH;
-  if (opts.engine) settings.convertEngine = opts.engine;
+  // A dedicated bibliography override lets the batch run independently of the
+  // plugin data.json (which Obsidian may rewrite from stale in-memory state).
+  if (process.env.BIB_MANAGER_BIB) {
+    settings.pathToBibliography = undefined;
+    settings.bibliographyPaths = process.env.BIB_MANAGER_BIB.split(';')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
 
   const bibPaths: string[] = [];
   if (settings.pathToBibliography) bibPaths.push(settings.pathToBibliography);
@@ -286,7 +289,10 @@ async function main(): Promise<void> {
     }
   }, 5000);
 
-  await runBatchConversion(fakePlugin);
+  await runBatchConversion(fakePlugin, {
+    only: opts.only ? new Set(opts.only) : undefined,
+    limit: opts.limit,
+  });
 
   clearInterval(timer);
   const final = progress;

@@ -17,11 +17,26 @@ const IDLE_BATCH = 5;
 // one batch per MIN_AUTO_RUN_INTERVAL_MS. This keeps embedding progress going
 // in the background without pinning the CPU / embedding service like a one-shot
 // full build would.
-const MAX_AUTO_RUN_FILES = 10;
+const MAX_AUTO_RUN_FILES = 30;
 // Minimum gap between two auto-run batches that are draining a large backlog.
 // The embedding model (e.g. bge-m3) is CPU-bound, so batches are spaced out to
 // keep the machine responsive while the index still catches up over time.
-const MIN_AUTO_RUN_INTERVAL_MS = 30000;
+const MIN_AUTO_RUN_INTERVAL_MS = 10000;
+// Estimated-chunk budget per auto batch, so a few huge notes cannot monopolize
+// a batch (a 1MB note alone would embed ~1k chunks in a single run).
+const AUTO_CHUNK_BUDGET = 600;
+// Files that fail to embed (read error, embedding error, or no embeddable
+// content — e.g. iCloud placeholders / empty notes) are retried with an
+// exponential backoff instead of occupying a batch slot every single run,
+// which previously let a handful of permanently-failing files starve the
+// whole drain loop down to a trickle.
+const FAIL_RETRY_BASE_MS = 30000;
+const FAIL_RETRY_MAX_MS = 10 * 60 * 1000;
+// Minimum gap between background cache writes. Each write rewrites the full
+// vectors payload (tens of MB), so writing after every tiny batch would keep
+// the disk (and iCloud sync, when the index lives inside the vault) churning
+// non-stop. Manual runs flush immediately via {@link SemanticIndexer.flushCache}.
+const MIN_CACHE_WRITE_INTERVAL_MS = 60000;
 
 export interface SemanticIndexerSettings {
   enabled: boolean;
@@ -90,6 +105,16 @@ export class SemanticIndexer {
   private followUpTimer: any = null;
   /** Timestamp of the last auto-run batch that drained part of a backlog. */
   private lastAutoRunAt = 0;
+  /**
+   * Per-path failure tracker for auto runs: consecutive failure count and the
+   * timestamp before which the file must not be retried. Files that keep
+   * failing (unreadable iCloud placeholders, embedding errors, notes with no
+   * embeddable text) would otherwise be re-attempted in every batch forever,
+   * starving the drain loop. Cleared on a successful embed.
+   */
+  private failStreak = new Map<string, { fails: number; retryAt: number }>();
+  /** Timestamp of the last actual cache write, used to throttle background saves. */
+  private lastCacheWriteAt = 0;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
   /**
    * Whether the embedding service is reachable on this machine. When false the
@@ -255,13 +280,31 @@ export class SemanticIndexer {
   scheduleSave(): void {
     this.cacheDirty = true;
     if (this.saveTimer) return;
+    // Background writes are rate-limited: each write rewrites the full vector
+    // payload, and during a long backlog drain a naive 5s debounce would still
+    // rewrite tens of MB (and re-upload them, when the index lives inside an
+    // iCloud-synced vault) after every tiny batch.
+    const elapsed = Date.now() - this.lastCacheWriteAt;
+    const delay = Math.max(5000, MIN_CACHE_WRITE_INTERVAL_MS - elapsed);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       if (this.cacheDirty) {
         this.cacheDirty = false;
         this.writeCache();
       }
-    }, 5000);
+    }, delay);
+  }
+
+  /** Write the cache immediately when dirty (end of manual runs, unload). */
+  flushCache(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.cacheDirty) {
+      this.cacheDirty = false;
+      this.writeCache();
+    }
   }
 
   private writeCache(): void {
@@ -273,6 +316,7 @@ export class SemanticIndexer {
       json.version = CACHE_VERSION;
       fs.writeFileSync(cacheJsonPath, JSON.stringify(json), 'utf-8');
       fs.writeFileSync(cacheBinPath, this.index.toVectorBuffer());
+      this.lastCacheWriteAt = Date.now();
       debugLog('SemanticIndexer', 'Cache saved', {
         docs: this.index.docCount,
         chunks: this.index.chunkCount,
@@ -312,7 +356,8 @@ export class SemanticIndexer {
       for (let i = 0; i < files.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         try {
-          await this.indexFile(files[i]);
+          const outcome = await this.indexFile(files[i]);
+          if (outcome === 'indexed') this.clearFailed(files[i].path);
         } catch (e: any) {
           this.failedCount++;
           debugLog('SemanticIndexer', 'indexFile failed, skipping', {
@@ -330,6 +375,7 @@ export class SemanticIndexer {
       }
 
       this.scheduleSave();
+      this.flushCache();
       debugLog('SemanticIndexer', 'Full build finished', { files: files.length });
     } finally {
       this.busy = false;
@@ -360,8 +406,9 @@ export class SemanticIndexer {
       for (const f of files) current.add(f.path);
 
       // Removed files
+      let removed = 0;
       for (const docPath of Array.from(this.index.docKeys())) {
-        if (!current.has(docPath)) this.index.removeDoc(docPath);
+        if (!current.has(docPath) && this.index.removeDoc(docPath)) removed++;
       }
 
       // Added / changed files
@@ -384,14 +431,26 @@ export class SemanticIndexer {
       // — at most MAX_AUTO_RUN_FILES per run, spaced by MIN_AUTO_RUN_INTERVAL_MS
       // — so the index still progresses without pinning the CPU / embedding
       // service like a one-shot full build would.
-      let targets = changed;
-      if (opts?.auto && changed.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
+      //
+      // Files in failure cooldown are excluded from auto runs entirely: a
+      // permanently-failing file (unreadable placeholder, no embeddable text)
+      // would otherwise be retried in every run and occupy batch slots forever.
+      let eligible = changed;
+      if (opts?.auto) {
+        eligible = changed.filter((f) => !this.isInFailCooldown(f.path));
+        const cooledDown = changed.length - eligible.length;
+        if (cooledDown > 0) {
+          debugLog('SemanticIndexer', 'skipped files in failure cooldown', { cooledDown });
+        }
+      }
+      let targets = eligible;
+      if (opts?.auto && eligible.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
         const elapsed = Date.now() - this.lastAutoRunAt;
         const remaining = MIN_AUTO_RUN_INTERVAL_MS - elapsed;
         if (remaining > 0) {
           // Throttled: skip this batch, schedule the next one when allowed.
           debugLog('SemanticIndexer', 'incrementalUpdate throttled (backlog drain rate limit)', {
-            changed: changed.length,
+            changed: eligible.length,
             nextInMs: remaining,
           });
           this.scheduleFollowUp(remaining);
@@ -402,13 +461,12 @@ export class SemanticIndexer {
         // an estimated chunk budget so one huge file cannot monopolize a batch
         // (a 1MB note alone would embed ~1k chunks in a single run).
         const maxFiles = opts.maxFiles ?? MAX_AUTO_RUN_FILES;
-        const budgetChunks = 200;
         targets = [];
         let estChunks = 0;
-        for (const f of changed) {
+        for (const f of eligible) {
           if (targets.length >= maxFiles) break;
           const est = Math.max(1, Math.ceil((f.stat.size || 0) / Math.max(1, this.settings.chunkSize)));
-          if (estChunks + est > budgetChunks && targets.length > 0) break;
+          if (estChunks + est > AUTO_CHUNK_BUDGET && targets.length > 0) break;
           estChunks += est;
           targets.push(f);
         }
@@ -416,12 +474,22 @@ export class SemanticIndexer {
       }
 
       this.failedCount = 0;
+      let indexed = 0;
       for (let i = 0; i < targets.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         try {
-          await this.indexFile(targets[i]);
+          const outcome = await this.indexFile(targets[i]);
+          if (outcome === 'indexed') {
+            indexed++;
+            this.clearFailed(targets[i].path);
+          } else {
+            // No embeddable text (empty note, iCloud placeholder): treat as a
+            // failure for backoff purposes so it does not get retried every run.
+            this.markFailed(targets[i].path);
+          }
         } catch (e: any) {
           this.failedCount++;
+          this.markFailed(targets[i].path);
           debugLog('SemanticIndexer', 'indexFile failed during incremental update', {
             path: targets[i].path,
             error: e.message,
@@ -437,11 +505,30 @@ export class SemanticIndexer {
         onProgress?.(this.progress);
       }
 
-      if (targets.length > 0 || current.size !== this.index.docCount) {
+      // Persist only when the index actually changed. The previous condition
+      // (targets.length > 0 || current.size !== docCount) was true on every
+      // auto run while any backlog existed — even runs that embedded nothing —
+      // so the full index was rewritten (and re-synced) every interval without
+      // any visible size change.
+      if (indexed > 0 || removed > 0) {
         this.scheduleSave();
+      }
+      if (!opts?.auto) this.flushCache();
+      // When files are left in failure cooldown, wake up at the earliest
+      // cooldown expiry so the drain resumes without waiting for a new vault
+      // event. The batch path above only chains follow-ups while more than
+      // MAX_AUTO_RUN_FILES eligible files remain, so once the backlog drains
+      // down to just cooled-down files it would otherwise stall until the next
+      // edit or restart.
+      if (opts?.auto) {
+        const nextRetry = this.earliestRetryAt();
+        if (nextRetry > 0) this.scheduleFollowUp(nextRetry - Date.now());
       }
       debugLog('SemanticIndexer', 'Incremental update finished', {
         changed: targets.length,
+        indexed,
+        removed,
+        failed: this.failedCount,
         backlog: changed.length - targets.length,
       });
     } finally {
@@ -495,7 +582,13 @@ export class SemanticIndexer {
     return pending;
   }
 
-  private async indexFile(f: TFile): Promise<void> {
+  /**
+   * Embed one file. Returns 'indexed' when vectors were (re-)written, 'empty'
+   * when the file had no embeddable text (its index entry, if any, was
+   * removed). Throws on read / embedding errors; callers decide whether the
+   * failure should be tracked for backoff.
+   */
+  private async indexFile(f: TFile): Promise<'indexed' | 'empty'> {
     // Use Obsidian's native read so iCloud on-demand files are handled
     // correctly (direct fs.readFileSync fails with ENOENT for files whose
     // content has not been downloaded to the local filesystem yet).
@@ -505,7 +598,7 @@ export class SemanticIndexer {
     );
     if (chunks.length === 0) {
       this.index.removeDoc(f.path);
-      return;
+      return 'empty';
     }
 
     const vectors = await embedTexts(
@@ -526,7 +619,37 @@ export class SemanticIndexer {
       chunks,
       vectors
     );
-    this.scheduleSave();
+    return 'indexed';
+  }
+
+  /** Record a failed embed attempt and return the retry-after timestamp. */
+  private markFailed(path: string): number {
+    const prev = this.failStreak.get(path);
+    const fails = (prev?.fails ?? 0) + 1;
+    const backoff = Math.min(FAIL_RETRY_BASE_MS * 2 ** (fails - 1), FAIL_RETRY_MAX_MS);
+    const retryAt = Date.now() + backoff;
+    this.failStreak.set(path, { fails, retryAt });
+    return retryAt;
+  }
+
+  private clearFailed(path: string): void {
+    this.failStreak.delete(path);
+  }
+
+  /** Files currently in failure cooldown must not occupy auto-run batch slots. */
+  private isInFailCooldown(path: string): boolean {
+    const f = this.failStreak.get(path);
+    return !!f && f.retryAt > Date.now();
+  }
+
+  /** Earliest future retryAt among cooled-down files, or 0 if none. */
+  private earliestRetryAt(): number {
+    let earliest = 0;
+    const now = Date.now();
+    for (const f of this.failStreak.values()) {
+      if (f.retryAt > now && (earliest === 0 || f.retryAt < earliest)) earliest = f.retryAt;
+    }
+    return earliest;
   }
 
   /** Embed the query (cached) and return the top chunk hits. */
@@ -554,15 +677,11 @@ export class SemanticIndexer {
   }
 
   destroy(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = null;
-    }
     if (this.followUpTimer) {
       clearTimeout(this.followUpTimer);
       this.followUpTimer = null;
     }
-    if (this.cacheDirty) this.writeCache();
+    this.flushCache();
   }
 }
 

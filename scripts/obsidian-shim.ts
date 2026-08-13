@@ -95,6 +95,12 @@ export function setGlobalApp(vaultRoot: string): void {
       },
     },
   };
+  // Some converter modules call `new Notice(...)` via the Obsidian *global*
+  // (they do not import it from 'obsidian'), which only exists in the plugin
+  // runtime. Provide it so the CLI does not throw "Notice is not defined".
+  if (!g.Notice) {
+    g.Notice = Notice;
+  }
   // Some plugin helpers reference the global `window` (e.g. bib/helpers.ts
   // getGlobal() for setTimeout). Provide a stub so they fall back to Node's
   // setTimeout without throwing.
