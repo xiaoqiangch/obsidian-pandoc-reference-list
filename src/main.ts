@@ -34,7 +34,6 @@ import { CiteSuggest } from './citeSuggest/citeSuggest';
 import { isZoteroRunning } from './bib/helpers';
 import { RagIndexer } from './rag/indexer';
 import { SemanticIndexer, IndexProgress } from './rag/semanticIndexer';
-import { isEmbeddingServiceAvailable } from './rag/embedding';
 import { backfillLiteratureLayouts } from './rag/backfill';
 import * as fs from 'fs';
 
@@ -172,10 +171,13 @@ export default class ReferenceList extends Plugin {
         if (this.settings.enableRagSearch) {
           this.ragIndexer.incrementalUpdate().catch(() => {});
         }
-        // Semantic (embedding) indexing auto-updates on file events too — but
-        // only when this machine can actually embed (runs Ollama). Machines
-        // without the embedding service keep the iCloud-synced index read-only.
-        if (this.semanticIndexer.enabled && this.semanticIndexer.embeddingAvailable) {
+        // Semantic (embedding) indexing auto-updates on file events too. The
+        // availability of the embedding engine is re-probed inside
+        // incrementalUpdate on every run, so a machine whose Ollama service
+        // comes back online (or whose API config was fixed) automatically
+        // resumes indexing without a plugin reload; an unreachable service is
+        // simply skipped.
+        if (this.semanticIndexer.enabled) {
           this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p)).catch(() => {});
         }
       },
@@ -502,13 +504,10 @@ export default class ReferenceList extends Plugin {
     }
     // Probe whether this machine can embed (runs Ollama). On machines without
     // the embedding service we only load the iCloud-synced index read-only —
-    // never build or overwrite it.
-    const available = await isEmbeddingServiceAvailable({
-      apiUrl: this.settings.semanticEmbedApiUrl || '',
-      apiKey: this.settings.semanticEmbedApiKey || '',
-      model: this.settings.semanticEmbedModel || '',
-    });
-    this.semanticIndexer.embeddingAvailable = available;
+    // never build or overwrite it. Note: this is only a startup hint; every
+    // build/update re-probes inside the indexer, so a service that comes back
+    // online later is picked up automatically.
+    const available = await this.semanticIndexer.ensureEmbeddingAvailable();
     debugLog('Main', 'Embedding service availability', { available });
 
     try {
@@ -572,6 +571,25 @@ export default class ReferenceList extends Plugin {
       new Notice('语义索引增量更新完成');
     } catch (e: any) {
       new Notice(`语义索引增量更新失败：${e.message}`);
+    }
+  }
+
+  /**
+   * Re-probe the embedding service and re-run the auto-maintenance flow after
+   * semantic-index settings change (API URL / key / model / enable toggle /
+   * storage location). The probe cache is dropped first so the service is
+   * checked immediately instead of reusing a stale "unavailable" result.
+   */
+  async reprobeSemanticIndex(): Promise<void> {
+    if (!this.semanticIndexer.enabled) return;
+    this.semanticIndexer.resetProbe();
+    const available = await this.semanticIndexer.ensureEmbeddingAvailable();
+    debugLog('Main', 'Semantic embedding service re-probed', { available });
+    if (available) {
+      // Service reachable: load cache and run the normal auto-maintain flow.
+      await this.initSemanticIndex();
+    } else {
+      new Notice('语义检索：本机嵌入服务不可用，索引保持只读，请检查嵌入 API 地址与模型。');
     }
   }
 
@@ -715,6 +733,10 @@ export default class ReferenceList extends Plugin {
     const excludeFolders = this.settings.indexExcludeFolders || [];
     this.ragIndexer.updateOptions({ followSymlinks, excludeFolders });
     this.semanticIndexer.updateSettings({
+      enabled: !!this.settings.enableNativeSemantic,
+      apiUrl: this.settings.semanticEmbedApiUrl || '',
+      apiKey: this.settings.semanticEmbedApiKey || '',
+      model: this.settings.semanticEmbedModel || '',
       indexLocation: (this.settings.semanticIndexLocation || 'vault') === 'local' ? 'local' : 'vault',
       followSymlinks,
       excludeFolders,

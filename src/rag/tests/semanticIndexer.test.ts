@@ -1,9 +1,21 @@
 jest.mock('shell-path', () => () => Promise.resolve(''));
 
-import fs from 'fs';
+jest.mock('../embedding', () => {
+  const actual = jest.requireActual('../embedding');
+  return {
+    ...actual,
+    embedTexts: jest.fn(async (texts: string[]) =>
+      texts.map(() => Array.from({ length: 1024 }, () => 0.1))
+    ),
+    isEmbeddingServiceAvailable: jest.fn(async () => true),
+  };
+});
+
 import os from 'os';
-import path from 'path';
 import { SemanticIndexer, SemanticIndexerSettings } from '../semanticIndexer';
+import { isEmbeddingServiceAvailable } from '../embedding';
+
+const mockProbe = isEmbeddingServiceAvailable as jest.Mock;
 
 function makeApp(): any {
   return {
@@ -34,25 +46,93 @@ function makeSettings(): SemanticIndexerSettings {
   };
 }
 
-describe('SemanticIndexer read-only mode', () => {
-  test('buildAll is a no-op when embedding service is unavailable', async () => {
+describe('SemanticIndexer dynamic embedding availability', () => {
+  beforeEach(() => {
+    mockProbe.mockReset();
+    mockProbe.mockResolvedValue(true);
+  });
+
+  test('buildAll is a no-op when the probe says the service is unavailable', async () => {
+    mockProbe.mockResolvedValueOnce(false);
     const app = makeApp();
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
-    indexer.embeddingAvailable = false;
 
-    // Should return immediately without touching vault files or writing cache.
     await indexer.buildAll();
     expect(indexer.building).toBe(false);
     expect(indexer.index.docCount).toBe(0);
   });
 
-  test('incrementalUpdate is a no-op when embedding service is unavailable', async () => {
+  test('incrementalUpdate is a no-op when the probe says the service is unavailable', async () => {
+    mockProbe.mockResolvedValueOnce(false);
     const app = makeApp();
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
-    indexer.embeddingAvailable = false;
 
     await indexer.incrementalUpdate();
     expect(indexer.building).toBe(false);
     expect(indexer.index.docCount).toBe(0);
+  });
+
+  test('incrementalUpdate resumes once the service comes back online', async () => {
+    // Regression: availability is decided *at update time*, not frozen from a
+    // startup probe. A service that was unavailable and later comes back (or a
+    // config fix) must resume indexing automatically.
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => [
+      {
+        path: 'notes/a.md',
+        stat: { mtime: Date.now(), size: 100 },
+        extension: 'md',
+      },
+    ];
+    app.vault.cachedRead = async () => 'hello semantic index content';
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+
+    mockProbe.mockResolvedValueOnce(false); // still down
+    await indexer.incrementalUpdate();
+    expect(indexer.index.docCount).toBe(0);
+
+    indexer.resetProbe(); // config change / time passes → re-probe
+    mockProbe.mockResolvedValueOnce(true); // back online
+    await indexer.incrementalUpdate();
+
+    expect(indexer.building).toBe(false);
+    expect(indexer.index.docCount).toBe(1);
+    expect(indexer.index.getMeta('notes/a.md')).toBeTruthy();
+  });
+
+  test('buildAll resumes once the service comes back online', async () => {
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => [
+      {
+        path: 'notes/a.md',
+        stat: { mtime: Date.now(), size: 100 },
+        extension: 'md',
+      },
+    ];
+    app.vault.cachedRead = async () => 'hello semantic index content';
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+
+    mockProbe.mockResolvedValueOnce(false);
+    await indexer.buildAll();
+    expect(indexer.index.docCount).toBe(0);
+
+    indexer.resetProbe(); // config change / time passes → re-probe
+    mockProbe.mockResolvedValueOnce(true);
+    await indexer.buildAll();
+
+    expect(indexer.building).toBe(false);
+    expect(indexer.index.docCount).toBe(1);
+  });
+
+  test('search returns empty when the service is unavailable', async () => {
+    mockProbe.mockResolvedValueOnce(false);
+    const app = makeApp();
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+    indexer.embeddingAvailable = true; // stale "available" flag must not bypass the probe
+
+    const hits = await indexer.search('anything');
+    expect(hits).toEqual([]);
   });
 });

@@ -724,8 +724,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           .onChange((value) => {
             this.plugin.settings.enableNativeSemantic = value;
             this.plugin.saveSettings();
-            if (value && this.plugin.settings.semanticEmbedApiKey) {
-              this.plugin.initSemanticIndex();
+            // Re-probe so toggling on immediately resumes maintenance even
+            // when the startup probe previously marked the service unavailable.
+            if (value) {
+              this.plugin.reprobeSemanticIndex();
             }
           })
       );
@@ -757,6 +759,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           .onChange((value) => {
             this.plugin.settings.semanticEmbedApiUrl = value;
             this.plugin.saveSettings();
+            this.plugin.reprobeSemanticIndex();
           })
       );
 
@@ -770,6 +773,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
           .onChange((value) => {
             this.plugin.settings.semanticEmbedApiKey = value.trim();
             this.plugin.saveSettings();
+            this.plugin.reprobeSemanticIndex();
           })
       );
 

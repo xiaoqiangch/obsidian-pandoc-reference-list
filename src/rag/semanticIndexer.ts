@@ -2,7 +2,7 @@ import { App, TFile } from 'obsidian';
 import { debugLog, getCacheRoot, getVaultRoot } from '../helpers';
 import { SemanticVectorIndex, SemanticVectorHit } from './vectorIndex';
 import { chunkByLines } from './chunker';
-import { embedTexts, EmbeddingSettings } from './embedding';
+import { embedTexts, EmbeddingSettings, isEmbeddingServiceAvailable } from './embedding';
 import { shouldIndexPath, isLiteraturePath, docChanged } from './indexer';
 import { extractTitle } from './bm25';
 
@@ -68,15 +68,44 @@ export class SemanticIndexer {
   /**
    * Whether the embedding service is reachable on this machine. When false the
    * index is treated as read-only (loaded from the iCloud-synced copy) and
-   * never rebuilt or overwritten. Set by the plugin based on
-   * isEmbeddingServiceAvailable().
+   * never rebuilt or overwritten. The value is refreshed lazily on every
+   * build/update/search via {@link ensureEmbeddingAvailable}, so a service that
+   * comes back online (or a config fix) is picked up automatically instead of
+   * freezing the index forever at the value probed during startup.
    */
   embeddingAvailable = true;
+  /** Timestamp of the last probe, used to bound probe frequency. */
+  private lastEmbeddingProbeAt = 0;
 
   constructor(app: App, outputPath: string, settings: SemanticIndexerSettings) {
     this.app = app;
     this.outputPath = outputPath;
     this.settings = settings;
+  }
+
+  /**
+   * Lazily (re-)probe the embedding service, caching the result for a short
+   * window so frequent file events do not hammer the probe endpoint. Whenever
+   * the index is about to be built or updated this is checked so the engine
+   * availability is decided *at update time*, not just at plugin startup.
+   */
+  async ensureEmbeddingAvailable(): Promise<boolean> {
+    const PROBE_TTL_MS = 15000;
+    if (Date.now() - this.lastEmbeddingProbeAt < PROBE_TTL_MS) {
+      return this.embeddingAvailable;
+    }
+    const available = await isEmbeddingServiceAvailable(this.embedSettings());
+    this.embeddingAvailable = available;
+    this.lastEmbeddingProbeAt = Date.now();
+    debugLog('SemanticIndexer', 'Embedding service probed', { available });
+    return available;
+  }
+
+  /** Drop the probe cache so the next ensureEmbeddingAvailable() re-probes.
+   *  Called when embedding settings change and the service should be checked
+   *  immediately instead of within the TTL window. */
+  resetProbe(): void {
+    this.lastEmbeddingProbeAt = 0;
   }
 
   /** Resolve the current cache file paths from the storage-location setting. */
@@ -230,7 +259,7 @@ export class SemanticIndexer {
   /** Rebuild the semantic index from scratch for all eligible markdown files. */
   async buildAll(onProgress?: (p: IndexProgress) => void): Promise<void> {
     if (this.busy) return;
-    if (!this.embeddingAvailable) {
+    if (!(await this.ensureEmbeddingAvailable())) {
       debugLog('SemanticIndexer', 'buildAll skipped: embedding service unavailable (read-only index)');
       return;
     }
@@ -277,7 +306,7 @@ export class SemanticIndexer {
   /** Diff against the current file list and embed only what changed. */
   async incrementalUpdate(onProgress?: (p: IndexProgress) => void): Promise<void> {
     if (this.busy || !this.enabled) return;
-    if (!this.embeddingAvailable) {
+    if (!(await this.ensureEmbeddingAvailable())) {
       debugLog('SemanticIndexer', 'incrementalUpdate skipped: embedding service unavailable (read-only index)');
       return;
     }
@@ -405,7 +434,7 @@ export class SemanticIndexer {
     // Without an embedding service we cannot embed the query, so semantic
     // search is unavailable on this machine (index may still be loaded from
     // iCloud for inspection, but query embedding requires the service).
-    if (!this.embeddingAvailable) return [];
+    if (!(await this.ensureEmbeddingAvailable())) return [];
     const k = topK ?? this.settings.topK ?? 20;
     const min = minSimilarity ?? 0;
 
