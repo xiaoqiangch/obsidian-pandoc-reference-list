@@ -53,7 +53,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   indexFollowSymlinks: true,
   indexExcludeFolders: ['node_modules', '.yarn', 'bower_components'],
   enableNativeSemantic: false,
-  semanticIndexLocation: 'local',
+  semanticIndexLocation: 'vault',
   semanticEmbedApiUrl: 'http://localhost:11434/v1',
   semanticEmbedApiKey: '',
   semanticEmbedModel: 'bge-m3',
@@ -732,12 +732,12 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('语义索引存放位置')
-      .setDesc('嵌入索引文件的存储位置：本地 ~/.bib-manager-index（推荐，不随 iCloud 同步，多设备各自在本地构建一次，互不冲突）或仓库内 .bib-manager/（随仓库同步，仅适合单设备使用，多设备同时打开会因同步互相覆盖）。切换后需在下方“重建语义索引”。')
+      .setDesc('嵌入索引文件的存储位置：仓库内 .bib-manager/（随 iCloud 同步共享——建议由配有 Ollama 嵌入服务的设备构建，其他无嵌入服务的设备会自动只读加载同步索引，不会重建/覆盖）或本地 ~/.bib-manager-index（仅本机，多设备各自构建）。切换后需在下方“重建语义索引”。')
       .addDropdown((dropdown) =>
         dropdown
-          .addOption('local', '本地 ~/.bib-manager-index（推荐）')
-          .addOption('vault', 'Obsidian 仓库内（.bib-manager/，单设备）')
-          .setValue(this.plugin.settings.semanticIndexLocation || 'local')
+          .addOption('vault', 'Obsidian 仓库内（.bib-manager/，随 iCloud 共享）')
+          .addOption('local', '本地 ~/.bib-manager-index（仅本机）')
+          .setValue(this.plugin.settings.semanticIndexLocation || 'vault')
           .onChange(async (value) => {
             const next = value === 'local' ? 'local' : 'vault';
             if (next === this.plugin.settings.semanticIndexLocation) return;

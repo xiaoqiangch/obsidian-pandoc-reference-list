@@ -34,6 +34,7 @@ import { CiteSuggest } from './citeSuggest/citeSuggest';
 import { isZoteroRunning } from './bib/helpers';
 import { RagIndexer } from './rag/indexer';
 import { SemanticIndexer, IndexProgress } from './rag/semanticIndexer';
+import { isEmbeddingServiceAvailable } from './rag/embedding';
 import { backfillLiteratureLayouts } from './rag/backfill';
 import * as fs from 'fs';
 
@@ -171,10 +172,10 @@ export default class ReferenceList extends Plugin {
         if (this.settings.enableRagSearch) {
           this.ragIndexer.incrementalUpdate().catch(() => {});
         }
-        // Semantic (embedding) indexing auto-updates on file events too. The
-        // embedding runs against the local Ollama service (bge-m3), so this is
-        // free and keeps the semantic index in sync with new / edited notes.
-        if (this.semanticIndexer.enabled) {
+        // Semantic (embedding) indexing auto-updates on file events too — but
+        // only when this machine can actually embed (runs Ollama). Machines
+        // without the embedding service keep the iCloud-synced index read-only.
+        if (this.semanticIndexer.enabled && this.semanticIndexer.embeddingAvailable) {
           this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p)).catch(() => {});
         }
       },
@@ -499,13 +500,28 @@ export default class ReferenceList extends Plugin {
       new Notice('语义检索：请先在设置中配置 Embedding API Key（本地 Ollama 服务可留空）。');
       return;
     }
-    // Automatic indexing: on startup we load the persisted index and then
-    // build (first run) or incrementally update (stale) embeddings in the
-    // background. Embedding runs against the local Ollama service, so there
-    // are no surprise API costs.
+    // Probe whether this machine can embed (runs Ollama). On machines without
+    // the embedding service we only load the iCloud-synced index read-only —
+    // never build or overwrite it.
+    const available = await isEmbeddingServiceAvailable({
+      apiUrl: this.settings.semanticEmbedApiUrl || '',
+      apiKey: this.settings.semanticEmbedApiKey || '',
+      model: this.settings.semanticEmbedModel || '',
+    });
+    this.semanticIndexer.embeddingAvailable = available;
+    debugLog('Main', 'Embedding service availability', { available });
+
     try {
       const loaded = await this.semanticIndexer.loadCache();
       debugLog('Main', 'Semantic index cache loaded', { loaded });
+      if (!available) {
+        if (loaded) {
+          new Notice('语义检索：本机无嵌入服务，已加载 iCloud 同步的语义索引（只读，不会重建/覆盖）。');
+        } else {
+          new Notice('语义检索：本机无嵌入服务，且无可用同步索引，请在有嵌入服务的设备上构建后同步。');
+        }
+        return;
+      }
       if (!loaded) {
         const pending = this.semanticIndexer.countPendingFiles();
         new Notice(`语义索引未构建：开始自动嵌入 ${pending} 个文件（首次构建）。`);

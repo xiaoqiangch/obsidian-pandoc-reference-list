@@ -65,6 +65,13 @@ export class SemanticIndexer {
   private cacheDirty = false;
   private saveTimer: any = null;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
+  /**
+   * Whether the embedding service is reachable on this machine. When false the
+   * index is treated as read-only (loaded from the iCloud-synced copy) and
+   * never rebuilt or overwritten. Set by the plugin based on
+   * isEmbeddingServiceAvailable().
+   */
+  embeddingAvailable = true;
 
   constructor(app: App, outputPath: string, settings: SemanticIndexerSettings) {
     this.app = app;
@@ -116,15 +123,20 @@ export class SemanticIndexer {
   async loadCache(): Promise<boolean> {
     try {
       const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
-      if (!fs.existsSync(cacheJsonPath) || !fs.existsSync(cacheBinPath)) return false;
-      const raw = JSON.parse(fs.readFileSync(this.cacheJsonPath, 'utf-8'));
+      // Use Obsidian's vault adapter to read the index so iCloud on-demand
+      // files are fully downloaded before parsing — a direct fs.readFileSync
+      // can hit a not-yet-synced placeholder (ENOENT / truncated JSON).
+      const rawText = await this.readVaultFile(cacheJsonPath);
+      if (rawText == null) return false;
+      const raw = JSON.parse(rawText);
       if (!raw || raw.version !== CACHE_VERSION) return false;
       // A different embedding model produces vectors with a different
       // dimensionality; mixing them would yield garbage search results, so
       // treat a model change as cache-invalid and force a rebuild.
       if (raw.model && this.settings.model && raw.model !== this.settings.model) return false;
       this.index.model = raw.model || '';
-      const bin = fs.readFileSync(this.cacheBinPath);
+      const bin = await this.readVaultBinary(cacheBinPath);
+      if (bin == null) return false;
       this.index.loadFrom(raw, bin);
       debugLog('SemanticIndexer', 'Cache loaded', {
         docs: this.index.docCount,
@@ -136,6 +148,53 @@ export class SemanticIndexer {
       debugLog('SemanticIndexer', 'Failed to load cache', { error: e });
       return false;
     }
+  }
+
+  /** Read a vault file through Obsidian's adapter (iCloud-aware), falling back
+   *  to direct fs when the path is outside the vault or the adapter is
+   *  unavailable. Returns null when the file is missing. */
+  private async readVaultFile(absPath: string): Promise<string | null> {
+    const adapter = this.app.vault?.adapter as any;
+    if (adapter?.read) {
+      const rel = this.toVaultRelative(absPath);
+      if (rel) {
+        try {
+          if (await adapter.exists(rel)) return await adapter.read(rel);
+        } catch {
+          // fall through to fs
+        }
+      }
+    }
+    return fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf-8') : null;
+  }
+
+  private async readVaultBinary(absPath: string): Promise<Buffer | null> {
+    const adapter = this.app.vault?.adapter as any;
+    if (adapter?.readBinary) {
+      const rel = this.toVaultRelative(absPath);
+      if (rel) {
+        try {
+          if (await adapter.exists(rel)) {
+            const ab = await adapter.readBinary(rel);
+            return Buffer.from(ab);
+          }
+        } catch {
+          // fall through to fs
+        }
+      }
+    }
+    return fs.existsSync(absPath) ? fs.readFileSync(absPath) : null;
+  }
+
+  private toVaultRelative(absPath: string): string | null {
+    try {
+      const vaultRoot = getVaultRoot();
+      const rel = path.relative(vaultRoot, absPath);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
+    } catch {
+      // fall back to absolute fs path
+    }
+    return null;
   }
 
   scheduleSave(): void {
@@ -171,6 +230,10 @@ export class SemanticIndexer {
   /** Rebuild the semantic index from scratch for all eligible markdown files. */
   async buildAll(onProgress?: (p: IndexProgress) => void): Promise<void> {
     if (this.busy) return;
+    if (!this.embeddingAvailable) {
+      debugLog('SemanticIndexer', 'buildAll skipped: embedding service unavailable (read-only index)');
+      return;
+    }
     this.busy = true;
     this.building = true;
     this.progress = null;
@@ -214,6 +277,10 @@ export class SemanticIndexer {
   /** Diff against the current file list and embed only what changed. */
   async incrementalUpdate(onProgress?: (p: IndexProgress) => void): Promise<void> {
     if (this.busy || !this.enabled) return;
+    if (!this.embeddingAvailable) {
+      debugLog('SemanticIndexer', 'incrementalUpdate skipped: embedding service unavailable (read-only index)');
+      return;
+    }
     this.busy = true;
     this.building = true;
     this.progress = null;

@@ -1,4 +1,5 @@
 import { postJson } from './httpClient';
+import { isLocalApiUrl } from '../helpers';
 
 export interface EmbeddingSettings {
   apiUrl: string;
@@ -85,4 +86,39 @@ export async function testEmbeddingConnection(settings: EmbeddingSettings): Prom
   const vecs = await embedTexts(['测试语义嵌入连接'], settings);
   if (!vecs[0]) throw new Error('嵌入返回为空');
   return vecs[0].length;
+}
+
+const PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Fast reachability probe for a local embedding service (Ollama). Used on
+ * machines that may not run the embedding service at all: when the service is
+ * unreachable, the plugin must NOT build / overwrite the synced index — it
+ * should only read the iCloud-synced copy.
+ *
+ * For local hosts we hit the Ollama version endpoint (cheap, no model load).
+ * For remote/cloud URLs we assume the service is available when a key is set
+ * (the full connection test is done by the settings panel's "测试连接").
+ */
+export async function isEmbeddingServiceAvailable(settings: EmbeddingSettings): Promise<boolean> {
+  const base = settings.apiUrl.replace(/\/+$/, '');
+  if (!isLocalApiUrl(base)) {
+    return !!settings.apiKey;
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    try {
+      // Ollama exposes /api/version; a 200 means the service is up.
+      const res = await fetch(base.replace(/\/v1$/, '') + '/api/version', {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      return res.ok;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
 }
