@@ -910,7 +910,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
         }
         semanticStatus.descEl.createDiv({
           cls: 'pwc-semantic-status-hint',
-          text: '语义索引为手动维护：不会随文件变化自动重建。新增/修改文件后请点“增量更新”，首次或需全量重建时点“重建语义索引”。索引缓存存于本机（不随 iCloud 同步），换电脑后需在本机重建一次。',
+          text: '语义索引自动维护：启动时自动构建/增量更新，新增或修改文件后自动同步嵌入（本地 Ollama 免费）。如需手动全量重建可点下方“重建语义索引”。索引缓存存于本机（不随 iCloud 同步），换电脑后需在本机重建一次。',
         });
       }
     };

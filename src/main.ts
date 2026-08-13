@@ -171,8 +171,12 @@ export default class ReferenceList extends Plugin {
         if (this.settings.enableRagSearch) {
           this.ragIndexer.incrementalUpdate().catch(() => {});
         }
-        // Semantic (embedding) indexing is manual-only: never auto-update on
-        // file events to avoid surprise embedding API calls / rebuilds.
+        // Semantic (embedding) indexing auto-updates on file events too. The
+        // embedding runs against the local Ollama service (bge-m3), so this is
+        // free and keeps the semantic index in sync with new / edited notes.
+        if (this.semanticIndexer.enabled) {
+          this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p)).catch(() => {});
+        }
       },
       5000,
       false
@@ -492,31 +496,34 @@ export default class ReferenceList extends Plugin {
   async initSemanticIndex(): Promise<void> {
     if (!this.semanticIndexer.enabled) return;
     if (!this.settings.semanticEmbedApiKey && !isLocalApiUrl(this.settings.semanticEmbedApiUrl || '')) {
-      new Notice('语义检索：请先在设置中配置 Embedding API Key（本地 Docker 服务可留空）。');
+      new Notice('语义检索：请先在设置中配置 Embedding API Key（本地 Ollama 服务可留空）。');
       return;
     }
-    // Manual-only indexing: on startup we only try to load a persisted index.
-    // We NEVER build or update embeddings automatically — do that from the
-    // settings "重建语义索引" / "增量更新" buttons or the command palette.
+    // Automatic indexing: on startup we load the persisted index and then
+    // build (first run) or incrementally update (stale) embeddings in the
+    // background. Embedding runs against the local Ollama service, so there
+    // are no surprise API costs.
     try {
       const loaded = await this.semanticIndexer.loadCache();
       debugLog('Main', 'Semantic index cache loaded', { loaded });
       if (!loaded) {
         const pending = this.semanticIndexer.countPendingFiles();
-        new Notice(
-          `语义索引未构建：当前有 ${pending} 个文件需要嵌入，请在设置中点击“重建语义索引”手动进行。`
-        );
+        new Notice(`语义索引未构建：开始自动嵌入 ${pending} 个文件（首次构建）。`);
+        await this.semanticIndexer.buildAll((p) => this.reportSemanticProgress(p));
+        this.semanticIndexer.countPendingFiles();
+        debugLog('Main', 'Semantic index auto-built', { files: pending });
       } else {
         const pending = this.semanticIndexer.countPendingFiles();
         if (pending > 0) {
-          new Notice(
-            `语义索引较新：还有 ${pending} 个文件需要嵌入，可在设置中点击“增量更新”手动进行。`
-          );
+          new Notice(`语义索引有 ${pending} 个文件待嵌入：开始自动增量更新。`);
+          await this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p));
+          this.semanticIndexer.countPendingFiles();
+          debugLog('Main', 'Semantic index auto-updated', { files: pending });
         }
       }
     } catch (e: any) {
-      debugLog('Main', 'Semantic index load failed', { error: e.message });
-      new Notice('语义索引缓存加载失败，请在设置中手动重建。');
+      debugLog('Main', 'Semantic index auto-update failed', { error: e.message });
+      new Notice(`语义索引自动更新失败：${e.message}`);
     }
   }
 
