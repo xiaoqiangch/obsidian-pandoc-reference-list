@@ -150,39 +150,44 @@ describe('SemanticIndexer bounded auto runs', () => {
       extension: 'md',
     }));
 
-  test('auto incrementalUpdate only embeds the run cap and leaves the backlog for follow-ups', async () => {
+  test('auto incrementalUpdate embeds a small delta', async () => {
     const app = makeApp();
-    app.vault.getMarkdownFiles = () => makeManyFiles(25);
+    app.vault.getMarkdownFiles = () => makeManyFiles(3);
     app.vault.cachedRead = async () => 'content x'.repeat(50);
 
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
-
-    // Background/auto run is capped: only MAX_AUTO_RUN_FILES (20) are embedded.
     await indexer.incrementalUpdate(undefined, { auto: true });
     expect(indexer.building).toBe(false);
-    expect(indexer.index.docCount).toBe(20);
-
-    // Manual runs are unbounded and drain the remaining backlog.
-    await indexer.incrementalUpdate();
-    expect(indexer.index.docCount).toBe(25);
-
+    expect(indexer.index.docCount).toBe(3);
     indexer.destroy();
   });
 
-  test('manual incrementalUpdate embeds everything in a single run', async () => {
+  test('auto incrementalUpdate skips a large backlog entirely (no partial drain)', async () => {
+    // Regression: auto runs must NOT drain a big pending backlog — doing so
+    // pinned the embedding service / CPU for an unbounded time on startup.
     const app = makeApp();
     app.vault.getMarkdownFiles = () => makeManyFiles(25);
     app.vault.cachedRead = async () => 'content x'.repeat(50);
 
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
-
-    await indexer.incrementalUpdate();
-    expect(indexer.index.docCount).toBe(25);
-
+    await indexer.incrementalUpdate(undefined, { auto: true });
+    expect(indexer.building).toBe(false);
+    expect(indexer.index.docCount).toBe(0);
     indexer.destroy();
   });
 
-  test('auto buildAll is capped; manual buildAll is full', async () => {
+  test('manual incrementalUpdate drains a large backlog in a single run', async () => {
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => makeManyFiles(25);
+    app.vault.cachedRead = async () => 'content x'.repeat(50);
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+    await indexer.incrementalUpdate();
+    expect(indexer.index.docCount).toBe(25);
+    indexer.destroy();
+  });
+
+  test('auto buildAll is a no-op; manual buildAll is full', async () => {
     const app = makeApp();
     app.vault.getMarkdownFiles = () => makeManyFiles(25);
     app.vault.cachedRead = async () => 'content x'.repeat(50);
@@ -190,11 +195,10 @@ describe('SemanticIndexer bounded auto runs', () => {
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
 
     await indexer.buildAll(undefined, { auto: true });
-    expect(indexer.index.docCount).toBe(20);
+    expect(indexer.index.docCount).toBe(0);
 
     await indexer.buildAll();
     expect(indexer.index.docCount).toBe(25);
-
     indexer.destroy();
   });
 });

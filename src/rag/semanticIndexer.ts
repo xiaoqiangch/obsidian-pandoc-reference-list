@@ -12,13 +12,13 @@ const path = require('path');
 const CACHE_VERSION = 1;
 // Every file costs embedding API calls, so yield between files more often.
 const IDLE_BATCH = 5;
-// A single auto-triggered run (startup / file events) embeds at most this many
-// files. A huge pending backlog (e.g. first build of a large vault) is drained
-// across multiple self-scheduled follow-up runs so a restart cannot pin the
-// CPU / embedding service for an unbounded amount of time.
+// A background (auto) run — startup or a file event — embeds only *small*
+// deltas (a note the user just created or edited). When more than this many
+// files are pending, the auto run skips entirely and leaves the backlog to a
+// manual "重建语义索引" / "增量更新". Auto-draining a large backlog (e.g. the
+// first build of a big vault) would keep the embedding service / CPU pegged
+// for an unbounded time.
 const MAX_AUTO_RUN_FILES = 20;
-// Delay before a follow-up run continues draining a large pending backlog.
-const AUTO_RUN_FOLLOWUP_MS = 30000;
 
 export interface SemanticIndexerSettings {
   enabled: boolean;
@@ -47,9 +47,10 @@ export interface IndexProgress {
 
 /**
  * Options for build/update runs. `auto` marks background runs (startup, file
- * events): they are bounded to `maxFiles` files per run and continue via
- * self-scheduled follow-ups, so a huge pending backlog cannot monopolize the
- * embedding service. Manual runs (commands / settings buttons) are unbounded.
+ * events): auto incremental runs embed only small deltas (≤ maxFiles pending
+ * files) and skip large backlogs, leaving them to manual runs; auto build runs
+ * never rebuild from scratch. Manual runs (commands / settings buttons) are
+ * unbounded and always perform a full sync.
  */
 export interface IndexRunOptions {
   auto?: boolean;
@@ -82,7 +83,6 @@ export class SemanticIndexer {
   private busy = false;
   private cacheDirty = false;
   private saveTimer: any = null;
-  private followUpTimer: any = null;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
   /**
    * Whether the embedding service is reachable on this machine. When false the
@@ -285,19 +285,19 @@ export class SemanticIndexer {
       debugLog('SemanticIndexer', 'buildAll skipped: embedding service unavailable (read-only index)');
       return;
     }
+    // Background (auto) runs never rebuild from scratch: building the whole
+    // vault would flood the embedding service. A full rebuild is always manual.
+    if (opts?.auto) {
+      debugLog('SemanticIndexer', 'buildAll skipped: auto runs never rebuild from scratch');
+      return;
+    }
     this.busy = true;
     this.building = true;
     this.progress = null;
     try {
-      let files = this.app.vault
+      const files = this.app.vault
         .getMarkdownFiles()
         .filter((f) => shouldIndexPath(f.path, undefined, this.indexOptions()));
-      // Bound background runs: when a huge backlog exists, build only the first
-      // `maxFiles` now and let follow-up runs finish the rest incrementally.
-      if (opts?.auto && files.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
-        files = files.slice(0, opts.maxFiles ?? MAX_AUTO_RUN_FILES);
-        this.scheduleFollowUp();
-      }
       this.index = new SemanticVectorIndex();
       this.index.model = this.settings.model;
       this.failedCount = 0;
@@ -366,17 +366,18 @@ export class SemanticIndexer {
         }
       }
 
-      // Bound background runs: a huge backlog (first build of a large vault,
-      // many pending files) is drained over multiple runs — each run embeds at
-      // most `maxFiles` files and schedules a follow-up to continue, so the
-      // CPU / embedding service is never monopolized for an unbounded time.
-      let targets = changed;
-      const cap = opts?.auto
-        ? (opts.maxFiles ?? MAX_AUTO_RUN_FILES)
-        : Number.MAX_SAFE_INTEGER;
-      if (changed.length > cap) {
-        targets = changed.slice(0, cap);
-        this.scheduleFollowUp();
+      // Background (auto) runs only embed *small* deltas — e.g. a note the user
+      // just created or edited. A large backlog (first build of a big vault, or
+      // many pending files) is deliberately SKIPPED and left to a manual
+      // "重建语义索引" / "增量更新": auto-draining thousands of files would keep
+      // the embedding service (and CPU) pegged for an unbounded time, and is
+      // exactly what happened during startup in large vaults.
+      const targets = changed;
+      if (opts?.auto && changed.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
+        debugLog('SemanticIndexer', 'incrementalUpdate skipped: large backlog left to manual build', {
+          changed: changed.length,
+        });
+        return;
       }
 
       this.failedCount = 0;
@@ -404,30 +405,12 @@ export class SemanticIndexer {
       if (targets.length > 0 || current.size !== this.index.docCount) {
         this.scheduleSave();
       }
-      debugLog('SemanticIndexer', 'Incremental update finished', { changed: targets.length, backlog: changed.length - targets.length });
+      debugLog('SemanticIndexer', 'Incremental update finished', { changed: targets.length });
     } finally {
       this.busy = false;
       this.building = false;
       this.progress = null;
     }
-  }
-
-  /**
-   * Schedule a follow-up background run so a large pending backlog is drained
-   * incrementally instead of blocking the CPU / embedding service all at once.
-   * The follow-up uses the same bounded auto-run settings.
-   */
-  private scheduleFollowUp(): void {
-    if (this.followUpTimer) return;
-    this.followUpTimer = setTimeout(() => {
-      this.followUpTimer = null;
-      if (!this.enabled) return;
-      if (this.busy) {
-        this.scheduleFollowUp();
-        return;
-      }
-      this.incrementalUpdate(undefined, { auto: true }).catch(() => {});
-    }, AUTO_RUN_FOLLOWUP_MS);
   }
 
   /**
@@ -518,10 +501,6 @@ export class SemanticIndexer {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
-    }
-    if (this.followUpTimer) {
-      clearTimeout(this.followUpTimer);
-      this.followUpTimer = null;
     }
     if (this.cacheDirty) this.writeCache();
   }
