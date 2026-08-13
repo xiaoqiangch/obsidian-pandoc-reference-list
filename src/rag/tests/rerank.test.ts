@@ -1,4 +1,4 @@
-import { parseRerankResponse, rerankTexts } from '../rerank';
+import { parseRerankResponse, rerankTexts, resolveRerankSettings } from '../rerank';
 import { isLocalApiUrl } from '../../helpers';
 
 jest.mock('../httpClient', () => ({
@@ -149,6 +149,23 @@ describe('parseRerankResponse', () => {
     expect(parseRerankResponse({ results: [{ index: 'x' }, { foo: 1 }] })).toEqual([]);
     expect(parseRerankResponse({})).toEqual([]);
     expect(parseRerankResponse(null)).toEqual([]);
+  });
+});
+
+describe('resolveRerankSettings', () => {
+  test('hardcoded override wins over caller settings', () => {
+    const out = resolveRerankSettings({
+      apiUrl: 'http://localhost:8081/v1',
+      apiKey: '',
+      model: 'jina-reranker-v3',
+      topN: 5,
+      minScore: 0.5,
+    });
+    expect(out.apiUrl).toContain('dashscope.aliyuncs.com');
+    expect(out.apiKey).toBeTruthy();
+    expect(out.model).toBe('qwen3-rerank');
+    expect(out.topN).toBe(20);
+    expect(out.minScore).toBe(0);
   });
 });
 

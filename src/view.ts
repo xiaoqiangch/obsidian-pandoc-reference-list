@@ -7,7 +7,7 @@ import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
 import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, RagPosition } from './rag/retrieval';
-import { rerankTexts } from './rag/rerank';
+import { rerankTexts, RERANK_OVERRIDE, resolveRerankSettings } from './rag/rerank';
 import { parseQuery } from './rag/tokenizer';
 import { LayoutBlock } from './rag/layout';
 import { SemanticVectorHit } from './rag/vectorIndex';
@@ -307,10 +307,11 @@ export class ReferenceListView extends ItemView {
       return;
     }
 
-    // Cross-encoder reranking (local Docker jina-reranker-v3): merge the
-    // full-text + semantic candidates and re-rank them. Falls back to the
-    // plain full-text / semantic groups when disabled or on any failure.
-    if (this.plugin.settings.rerankEnabled && this.plugin.settings.rerankApiUrl) {
+    // Cross-encoder reranking: merge the full-text + semantic candidates and
+    // re-rank them. Falls back to the plain full-text / semantic groups when
+    // disabled or on any failure. The rerank service config (URL/key/model) is
+    // hardcoded via RERANK_OVERRIDE — no settings needed.
+    if (RERANK_OVERRIDE.enabled) {
       const ok = await this.renderRerankedResults(container, seq);
       if (ok) return;
     }
@@ -425,7 +426,7 @@ export class ReferenceListView extends ItemView {
     const vaultRoot = getVaultRoot();
     const outputPath = settings.convertOutputPath || 'literature';
     const snippetLen = settings.ragSnippetLength || 180;
-    const candidateCount = settings.rerankCandidateCount || 30;
+    const candidateCount = RERANK_OVERRIDE.candidateCount || 30;
 
     interface Candidate {
       path: string;
@@ -542,13 +543,13 @@ export class ReferenceListView extends ItemView {
       const results = await rerankTexts(
         query,
         candidates.map((c) => c.snippet),
-        {
+        resolveRerankSettings({
           apiUrl: settings.rerankApiUrl || '',
           apiKey: settings.rerankApiKey || '',
           model: settings.rerankModel || '',
           topN: settings.rerankTopN || 20,
           minScore: settings.rerankMinScore ?? 0,
-        }
+        })
       );
       reranked = results
         .filter((r) => r.index >= 0 && r.index < candidates.length)

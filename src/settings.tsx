@@ -4,7 +4,7 @@ import which from 'which';
 import { t } from './lang/helpers';
 import { debugLog } from './helpers';
 import { testEmbeddingConnection } from './rag/embedding';
-import { testRerankConnection } from './rag/rerank';
+import { testRerankConnection, resolveRerankSettings } from './rag/rerank';
 import ReferenceList from './main';
 import ReactDOM from 'react-dom';
 import React from 'react';
@@ -47,6 +47,9 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   convertEngine: 'mineru',
   mineruApiToken: '',
   mineruModelVersion: 'vlm',
+  mineruBackend: 'cloud',
+  mineruLocalPath: '',
+  mineruLocalDevice: 'mps',
   enableRagSearch: true,
   ragSnippetLength: 180,
   ragMinTermCoverage: 1,
@@ -108,6 +111,12 @@ export interface ReferenceListSettings {
   convertEngine: 'mineru' | 'llm';
   mineruApiToken: string;
   mineruModelVersion: string;
+  /** Where MinerU parses PDFs: 'cloud' (mineru.net API) or 'local' (local CLI). */
+  mineruBackend?: 'cloud' | 'local';
+  /** Path to the local mineru binary (used when mineruBackend === 'local'). */
+  mineruLocalPath?: string;
+  /** Inference device for the local mineru CLI. */
+  mineruLocalDevice?: 'mps' | 'cpu';
   enableRagSearch?: boolean;
   ragSnippetLength?: number;
   ragMinTermCoverage?: number;
@@ -631,6 +640,47 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName(t('MinerU backend'))
+      .setDesc(t('Cloud uses the mineru.net API (requires an API token). Local runs a locally-installed mineru CLI; PDFs never leave your machine.'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('cloud', t('MinerU cloud API'))
+          .addOption('local', t('Local mineru CLI'))
+          .setValue(this.plugin.settings.mineruBackend || 'cloud')
+          .onChange((value: 'cloud' | 'local') => {
+            this.plugin.settings.mineruBackend = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Local mineru path'))
+      .setDesc(t('Absolute path to the local mineru binary, e.g. ~/mineru/.venv/bin/mineru. Used when the backend is "Local".'))
+      .addText((text) =>
+        text
+          .setPlaceholder('~/mineru/.venv/bin/mineru')
+          .setValue(this.plugin.settings.mineruLocalPath || '')
+          .onChange((value) => {
+            this.plugin.settings.mineruLocalPath = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t('Local mineru device'))
+      .setDesc(t('Inference device for the local mineru CLI. MPS uses the Apple GPU; CPU is slower but uses no GPU memory.'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('mps', 'MPS (Apple GPU)')
+          .addOption('cpu', 'CPU')
+          .setValue(this.plugin.settings.mineruLocalDevice || 'mps')
+          .onChange((value: 'mps' | 'cpu') => {
+            this.plugin.settings.mineruLocalDevice = value;
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName(t('Conversion model API URL'))
       .setDesc(t('OpenAI-compatible API URL for the LLM vision model (backup engine). Defaults to Volcengine ARK API.'))
       .addText((text) =>
@@ -1099,19 +1149,19 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     const rerankTest = new Setting(containerEl).setName('重排序连接测试');
-    rerankTest.addButton((button) =>
+      rerankTest.addButton((button) =>
       button.setButtonText('测试重排序').onClick(async () => {
         try {
           const n = await testRerankConnection(
             '数字经济的增长效应',
             ['数字经济对区域增长的影响研究。', '二十四桥明月夜，玉人何处教吹箫。', 'climate change and agriculture'],
-            {
+            resolveRerankSettings({
               apiUrl: this.plugin.settings.rerankApiUrl || '',
               apiKey: this.plugin.settings.rerankApiKey || '',
               model: this.plugin.settings.rerankModel || '',
               topN: this.plugin.settings.rerankTopN || 20,
               minScore: 0,
-            }
+            })
           );
           new Notice(`重排序连接正常（返回 ${n} 条）`);
         } catch (e: any) {
