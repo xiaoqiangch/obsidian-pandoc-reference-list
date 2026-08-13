@@ -62,8 +62,9 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   semanticTopK: 20,
   semanticMinScore: 0.3,
   rerankEnabled: true,
-  rerankApiUrl: 'http://localhost:8081/v1',
-  rerankModel: 'jina-reranker-v3',
+  rerankApiUrl: 'https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank',
+  rerankApiKey: '',
+  rerankModel: 'qwen3-rerank',
   rerankTopN: 20,
   rerankMinScore: 0,
   rerankCandidateCount: 30,
@@ -127,6 +128,7 @@ export interface ReferenceListSettings {
   semanticMinScore?: number;
   rerankEnabled?: boolean;
   rerankApiUrl?: string;
+  rerankApiKey?: string;
   rerankModel?: string;
   rerankTopN?: number;
   rerankMinScore?: number;
@@ -1033,10 +1035,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('重排序 API 地址')
-      .setDesc('本地 Docker：http://localhost:8081/v1（自动追加 /rerank 路径）。')
+      .setDesc('本地 Docker：http://localhost:8081/v1（自动追加 /rerank）；阿里云百炼 OpenAI 兼容：https://dashscope.aliyuncs.com/compatible-mode/v1（自动追加 /reranks）；阿里云百炼原生：https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank（完整端点，input 包装体）。')
       .addText((text) =>
         text
-          .setPlaceholder('http://localhost:8081/v1')
+          .setPlaceholder('https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank')
           .setValue(this.plugin.settings.rerankApiUrl || '')
           .onChange((value) => {
             this.plugin.settings.rerankApiUrl = value;
@@ -1045,10 +1047,23 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName('重排序 API Key')
+      .setDesc('云端服务需要（如阿里云百炼）；本地 Docker 服务可留空。')
+      .addText((text) =>
+        text
+          .setPlaceholder('sk-...')
+          .setValue(this.plugin.settings.rerankApiKey || '')
+          .onChange((value) => {
+            this.plugin.settings.rerankApiKey = value.trim();
+            this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName('重排序模型')
       .addText((text) =>
         text
-          .setPlaceholder('jina-reranker-v3')
+          .setPlaceholder('qwen3-rerank')
           .setValue(this.plugin.settings.rerankModel || '')
           .onChange((value) => {
             this.plugin.settings.rerankModel = value.trim();
@@ -1092,6 +1107,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             ['数字经济对区域增长的影响研究。', '二十四桥明月夜，玉人何处教吹箫。', 'climate change and agriculture'],
             {
               apiUrl: this.plugin.settings.rerankApiUrl || '',
+              apiKey: this.plugin.settings.rerankApiKey || '',
               model: this.plugin.settings.rerankModel || '',
               topN: this.plugin.settings.rerankTopN || 20,
               minScore: 0,

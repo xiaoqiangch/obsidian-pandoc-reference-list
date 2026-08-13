@@ -544,6 +544,7 @@ export class ReferenceListView extends ItemView {
         candidates.map((c) => c.snippet),
         {
           apiUrl: settings.rerankApiUrl || '',
+          apiKey: settings.rerankApiKey || '',
           model: settings.rerankModel || '',
           topN: settings.rerankTopN || 20,
           minScore: settings.rerankMinScore ?? 0,
