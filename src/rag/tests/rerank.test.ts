@@ -13,10 +13,10 @@ describe('rerankTexts endpoint selection', () => {
     mockPostJson.mockReset();
   });
 
-  test('uses /reranks for Aliyun DashScope endpoints and sends Bearer key', async () => {
+  test('rewrites Aliyun compatible-mode URLs to the native rerank endpoint', async () => {
     mockPostJson.mockResolvedValue({
       status: 200,
-      json: { results: [{ index: 1, relevance_score: 0.9 }] },
+      json: { output: { results: [{ index: 1, relevance_score: 0.9 }] } },
     });
     await rerankTexts('query', ['doc'], {
       apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -26,10 +26,35 @@ describe('rerankTexts endpoint selection', () => {
       minScore: 0,
     });
     const [url, body, headers] = mockPostJson.mock.calls[0];
-    expect(url).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1/reranks');
+    expect(url).toBe(
+      'https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank'
+    );
+    // DashScope compatible-mode has no rerank; the rewritten native endpoint
+    // requires the input-wrapped body.
     expect((body as any).model).toBe('qwen3-rerank');
-    expect((body as any).top_n).toBe(1);
+    expect((body as any).input).toEqual({ query: 'query', documents: ['doc'] });
+    expect((body as any).parameters).toEqual({ top_n: 1 });
+    expect((body as any).query).toBeUndefined();
     expect(headers['Authorization']).toBe('Bearer sk-test');
+  });
+
+  test('uses /reranks + flat body for non-compatible Aliyun endpoints', async () => {
+    mockPostJson.mockResolvedValue({
+      status: 200,
+      json: { results: [{ index: 0, relevance_score: 0.8 }] },
+    });
+    await rerankTexts('query', ['doc'], {
+      apiUrl: 'https://api.aliyuncs.com/v1',
+      apiKey: 'sk',
+      model: 'qwen3-rerank',
+      topN: 5,
+      minScore: 0,
+    });
+    const [url, body] = mockPostJson.mock.calls[0];
+    expect(url).toBe('https://api.aliyuncs.com/v1/reranks');
+    expect((body as any).query).toBe('query');
+    expect((body as any).documents).toEqual(['doc']);
+    expect((body as any).input).toBeUndefined();
   });
 
   test('uses /rerank for local Docker and no key header when empty', async () => {

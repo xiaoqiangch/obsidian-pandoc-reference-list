@@ -41,14 +41,26 @@ export async function rerankTexts(
   const base = settings.apiUrl.replace(/\/+$/, '');
   // 原生 rerank 端点（/api/v1/services/rerank/...）用完整 URL + input 包装体；
   // 阿里云百炼 OpenAI 兼容用 /reranks（复数，扁平体）；本地 Docker 及其他兼容服务用 /rerank。
+  // 百炼的兼容模式（/compatible-mode/...）并不提供 rerank，只有原生 rerank 服务有——
+  // 若用户配的是 compatible-mode 地址，自动改写为原生端点，避免拼出 404 路径。
   const isAliyunNative = /\/services\/rerank\//i.test(base);
-  const url = isAliyunNative
-    ? base
+  const isAliyunCompatible =
+    !isAliyunNative &&
+    /aliyuncs\.com|maas\.aliyuncs\.com/i.test(base) &&
+    /\/compatible-mode(\/v1)?\/?$/i.test(base);
+  const useNative = isAliyunNative || isAliyunCompatible;
+  const url = useNative
+    ? isAliyunNative
+      ? base
+      : base.replace(
+          /\/compatible-mode(\/v1)?\/?$/i,
+          '/api/v1/services/rerank/text-rerank/text-rerank'
+        )
     : /aliyuncs\.com|maas\.aliyuncs\.com/i.test(base)
     ? base + '/reranks'
     : base + '/rerank';
   const topN = Math.max(1, Math.min(settings.topN, documents.length));
-  const body = isAliyunNative
+  const body = useNative
     ? {
         model: settings.model,
         input: { query, documents },
