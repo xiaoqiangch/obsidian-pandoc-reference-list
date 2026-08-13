@@ -22,39 +22,132 @@ import testYAMLCSL from './test.yaml.json';
 // import library from './My Library.json';
 import { existsSync, rmSync } from 'fs';
 
+/**
+ * A minimal EventEmitter-style response stream so mocked https/http requests
+ * can emit data/end just like Node's real `http.IncomingMessage`.
+ */
+function mockResponseStream(body: string) {
+  const listeners: Record<string, Array<(payload?: any) => void>> = {};
+  const stream: any = {
+    setEncoding() {},
+    on(event: string, cb: (payload?: any) => void) {
+      (listeners[event] = listeners[event] || []).push(cb);
+      return stream;
+    },
+    _emit(event: string, payload?: any) {
+      for (const cb of listeners[event] || []) cb(payload);
+    },
+  };
+  // Deliver the body asynchronously so awaiting code paths run correctly.
+  setTimeout(() => stream._emit('data', body), 0);
+  setTimeout(() => stream._emit('end'), 1);
+  return stream;
+}
+
+// Mock all network modules so the suite is deterministic (no live Zotero,
+// GitHub raw, or locale/style downloads).
+jest.mock('https', () => {
+  const actual = jest.requireActual('https');
+  return {
+    ...actual,
+    get: jest.fn((url: string, cb: (res: any) => void) => {
+      const body = url.includes('locales-') ? '<locale>bg-BG</locale>' : '<style>test-style</style>';
+      cb(mockResponseStream(body));
+      return { on() {}, setTimeout() {} };
+    }),
+  };
+});
+
+jest.mock('download', () =>
+  jest.fn(() => Promise.resolve(Buffer.from('ready')))
+);
+
+jest.mock('http', () => {
+  const actual = jest.requireActual('http');
+  return {
+    ...actual,
+    request: jest.fn((_opts: any, cb?: (res: any) => void) => {
+      const stream = mockResponseStream(
+        JSON.stringify({
+          result: [
+            { id: 1, name: 'My Library' },
+            { id: 2, name: 'test' },
+          ],
+        })
+      );
+      if (cb) cb(stream);
+      const req = {
+        on() {
+          return req;
+        },
+        setTimeout() {
+          return req;
+        },
+        write() {},
+        end() {},
+      };
+      return req;
+    }),
+  };
+});
+
+/**
+ * bibToCSL stamps every entry with runtime metadata (`sourceFile` = the
+ * absolute bibliography path, `addDate` = file mtime / bib add_date). The
+ * fixtures are static snapshots without these, so strip them before
+ * comparing to keep the assertions deterministic.
+ */
+function stripDynamicMeta(entries: any[]): any[] {
+  return entries.map((e) => {
+    const { sourceFile, addDate, line, ...rest } = e;
+    void sourceFile;
+    void addDate;
+    void line;
+    return rest;
+  });
+}
+
 describe('bibToCSL()', () => {
   it('returns json from json', async () => {
     expect(
-      await bibToCSL(
-        path.join(__dirname, 'test.json'),
-        '/opt/homebrew/bin/pandoc'
+      stripDynamicMeta(
+        await bibToCSL(
+          path.join(__dirname, 'test.json'),
+          '/opt/homebrew/bin/pandoc'
+        )
       )
     ).toEqual(testCSL);
   });
 
   it('returns json from bib', async () => {
     expect(
-      await bibToCSL(
-        path.join(__dirname, 'test.bib'),
-        '/opt/homebrew/bin/pandoc'
+      stripDynamicMeta(
+        await bibToCSL(
+          path.join(__dirname, 'test.bib'),
+          '/opt/homebrew/bin/pandoc'
+        )
       )
     ).toEqual(testBIBCSL);
   });
 
   it('returns json from bib2', async () => {
     expect(
-      await bibToCSL(
-        path.join(__dirname, 'test2.bib'),
-        '/opt/homebrew/bin/pandoc'
+      stripDynamicMeta(
+        await bibToCSL(
+          path.join(__dirname, 'test2.bib'),
+          '/opt/homebrew/bin/pandoc'
+        )
       )
     ).toEqual(testBIB2CSL);
   });
 
   it('returns json from yaml', async () => {
     expect(
-      await bibToCSL(
-        path.join(__dirname, 'test.yaml'),
-        '/opt/homebrew/bin/pandoc'
+      stripDynamicMeta(
+        await bibToCSL(
+          path.join(__dirname, 'test.yaml'),
+          '/opt/homebrew/bin/pandoc'
+        )
       )
     ).toEqual(testYAMLCSL);
   });

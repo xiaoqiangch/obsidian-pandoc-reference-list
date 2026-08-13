@@ -12,6 +12,7 @@ import {
   getCSLStyle,
   getItemJSONFromCiteKeys,
   getZBib,
+  parseBibFileField as parseBibFileFieldShared,
   refreshZBib,
 } from './helpers';
 import {
@@ -1193,7 +1194,7 @@ export class BibManager {
                 setIcon(div, icon);
                 div.setAttr(
                   'aria-label',
-                  t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop() || (isPDF ? 'PDF' : isEPUB ? 'EPUB' : 'HTML'))
+                  t('Open attachment') + ': ' + (link.split(/[\\/]/).pop() || (isPDF ? 'PDF' : isEPUB ? 'EPUB' : 'HTML'))
                 );
                 div.onClickEvent(async () => {
                   await this.openAttachment(link);
@@ -1217,7 +1218,7 @@ export class BibManager {
       isInsideVault = true;
       relativePath = link
         .substring(vaultRoot.length)
-        .replace(/^[\\\/]/, '');
+        .replace(/^[\\/]/, '');
     }
 
     if (isInsideVault) {
@@ -1281,7 +1282,7 @@ export class BibManager {
       isInsideVault = true;
       relativePath = link
         .substring(vaultRoot.length)
-        .replace(/^[\\\/]/, '');
+        .replace(/^[\\/]/, '');
     }
 
     let tfile: TFile | null = null;
@@ -1454,42 +1455,7 @@ export class BibManager {
   }
 
   parseBibFileField(fileField: string): string[] {
-    if (!fileField) return [];
-
-    const validExts = ['.pdf', '.epub', '.html', '.htm'];
-    const hasValidExt = (p: string) => {
-      const ext = p.toLowerCase();
-      return validExts.some(e => ext.endsWith(e));
-    };
-
-    const cleaned = fileField.trim().replace(/^[\{\"]|[\}\"]$/g, '');
-    if (cleaned) {
-      const fullPath = path.isAbsolute(cleaned) ? cleaned : path.join(getVaultRoot(), cleaned);
-      if (hasValidExt(fullPath) && fs.existsSync(fullPath)) {
-        return [fullPath];
-      }
-    }
-
-    const files = fileField.split(';');
-    const paths: string[] = [];
-    for (const f of files) {
-      const parts = f.split(':');
-      let p = parts.length >= 2 ? parts[1] : f;
-
-      if (p) {
-        p = p.trim();
-        p = p.replace(/^[\{\"]|[\}\"]$/g, '');
-
-        if (p) {
-          if (path.isAbsolute(p)) {
-            paths.push(p);
-          } else {
-            paths.push(path.join(getVaultRoot(), p));
-          }
-        }
-      }
-    }
-    return paths.filter((p) => hasValidExt(p));
+    return parseBibFileFieldShared(fileField, getVaultRoot());
   }
 
   dispatchResult(file: TFile, result: FileCache) {
@@ -1586,7 +1552,7 @@ export class BibManager {
     
     if (match) {
       let entryBlock = match[1];
-      const fileFieldRegex = /file\s*=\s*[\{\"]([^\"\}]*)[\}\"]/i;
+      const fileFieldRegex = /file\s*=\s*[{"]([^"}]*)[}"]/i;
       
       if (fileFieldRegex.test(entryBlock)) {
         entryBlock = entryBlock.replace(fileFieldRegex, `file = {${attachmentPath}}`);

@@ -1,5 +1,4 @@
-import { requestUrl } from 'obsidian';
-import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
+import { postJson } from './httpClient';
 
 export interface RerankSettings {
   apiUrl: string;
@@ -17,14 +16,13 @@ export interface RerankResult {
   score: number;
 }
 
-const RERANK_TIMEOUT_MS = 120000;
-
 /**
  * Re-rank a list of candidate passages against a query with a cross-encoder
- * reranker. Targets the endpoint exposed by Jina's local Docker reranker
- * (`jina-reranker-v3`), which serves a `POST /rerank` (or `/v1/rerank`) route
- * with the body `{ model, query, documents, top_n }` and returns
- * `{ results: [{ index, relevance_score }] }`.
+ * reranker. Targets the local Docker jina-reranker-v3 service, which serves a
+ * `POST /rerank` (or `/v1/rerank`) route with the body
+ * `{ model, query, documents, top_n }` and returns
+ * `{ results: [{ index, relevance_score }] }`. Results below `minScore` are
+ * dropped here, so callers only ever receive the filtered set.
  */
 export async function rerankTexts(
   query: string,
@@ -34,21 +32,16 @@ export async function rerankTexts(
   if (!query.trim() || documents.length === 0) return [];
 
   const url = settings.apiUrl.replace(/\/+$/, '') + '/rerank';
-  const body = JSON.stringify({
+  const body = {
     model: settings.model,
     query,
     documents,
     top_n: Math.max(1, Math.min(settings.topN, documents.length)),
-  });
+  };
 
-  let response: RequestUrlResponse;
+  let response;
   try {
-    response = await requestUrlWithTimeout({
-      url,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
+    response = await postJson(url, body, {});
   } catch (e: any) {
     throw new Error(`重排序请求失败: ${e.message}`);
   }
@@ -57,7 +50,8 @@ export async function rerankTexts(
   if (parsed.length === 0) {
     throw new Error('重排序返回为空');
   }
-  return parsed;
+  const min = Math.max(0, Math.min(1, settings.minScore || 0));
+  return min > 0 ? parsed.filter((r) => r.score >= min) : parsed;
 }
 
 /**
@@ -86,17 +80,4 @@ export async function testRerankConnection(
   const results = await rerankTexts(query, documents, settings);
   if (results.length === 0) throw new Error('重排序返回为空');
   return results.length;
-}
-
-function requestUrlWithTimeout(opts: RequestUrlParam): Promise<RequestUrlResponse> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`重排序请求超时(${RERANK_TIMEOUT_MS}ms)`)),
-      RERANK_TIMEOUT_MS
-    );
-  });
-  return Promise.race([requestUrl(opts), timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }

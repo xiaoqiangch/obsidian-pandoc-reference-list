@@ -550,12 +550,7 @@ export class ReferenceListView extends ItemView {
         }
       );
       reranked = results
-        .filter(
-          (r) =>
-            r.index >= 0 &&
-            r.index < candidates.length &&
-            r.score >= (settings.rerankMinScore ?? 0)
-        )
+        .filter((r) => r.index >= 0 && r.index < candidates.length)
         .map((r) => ({ c: candidates[r.index], score: r.score }));
     } catch (e: any) {
       debugLog('View', 'Rerank failed, falling back to plain groups', { error: e.message });
@@ -1112,7 +1107,7 @@ export class ReferenceListView extends ItemView {
                     if (isHTML) icon = 'lucide-globe';
 
                     setIcon(div, icon);
-                    div.setAttr('aria-label', t('Open attachment') + ': ' + (link.split(/[\\\/]/).pop()));
+                    div.setAttr('aria-label', t('Open attachment') + ': ' + (link.split(/[\\/]/).pop()));
                     div.onClickEvent(() => {
                       if (isHTML) {
                         this.openHTMLInternal(link);
@@ -1532,7 +1527,7 @@ export class ReferenceListView extends ItemView {
 
     if (vaultRoot && link.startsWith(vaultRoot)) {
         isInsideVault = true;
-        relativePath = link.substring(vaultRoot.length).replace(/^[\\\/]/, '');
+        relativePath = link.substring(vaultRoot.length).replace(/^[\\/]/, '');
     }
 
     if (isInsideVault) {
@@ -1713,7 +1708,7 @@ export class ReferenceListView extends ItemView {
     const vaultRoot = (this.plugin.app.vault.adapter as any).getBasePath();
     let relativePath = mdPath;
     if (vaultRoot && mdPath.startsWith(vaultRoot)) {
-      relativePath = mdPath.substring(vaultRoot.length).replace(/^[\\\/]/, '');
+      relativePath = mdPath.substring(vaultRoot.length).replace(/^[\\/]/, '');
     }
 
     if (relativePath !== mdPath) {

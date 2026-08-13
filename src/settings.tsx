@@ -2,6 +2,7 @@ import { Notice, PluginSettingTab, Setting, TextComponent } from 'obsidian';
 import which from 'which';
 
 import { t } from './lang/helpers';
+import { debugLog } from './helpers';
 import { testEmbeddingConnection } from './rag/embedding';
 import { testRerankConnection } from './rag/rerank';
 import ReferenceList from './main';
@@ -18,6 +19,12 @@ import {
 import { cslListRaw } from './bib/cslList';
 import { langListRaw } from './bib/cslLangList';
 import { ZoteroPullSetting } from './settings/ZoteroPullSetting';
+import {
+  collectAttachmentStats,
+  runBatchConversion,
+  getBatchProgress,
+  AttachmentStat,
+} from './converter/convertAll';
 
 export const DEFAULT_SETTINGS: ReferenceListSettings = {
   pathToPandoc: '',
@@ -47,15 +54,15 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   indexExcludeFolders: ['node_modules', '.yarn', 'bower_components'],
   enableNativeSemantic: false,
   semanticIndexLocation: 'vault',
-  semanticEmbedApiUrl: 'http://localhost:8080/v1',
+  semanticEmbedApiUrl: 'http://localhost:11434/v1',
   semanticEmbedApiKey: '',
-  semanticEmbedModel: 'jina-embeddings-v5-omni',
+  semanticEmbedModel: 'bge-m3',
   semanticChunkSize: 1200,
   semanticChunkOverlap: 120,
   semanticTopK: 20,
   semanticMinScore: 0.3,
   rerankEnabled: true,
-  rerankApiUrl: 'http://localhost:8080/v1',
+  rerankApiUrl: 'http://localhost:8081/v1',
   rerankModel: 'jina-reranker-v3',
   rerankTopN: 20,
   rerankMinScore: 0,
@@ -129,6 +136,7 @@ export interface ReferenceListSettings {
 export class ReferenceListSettingsTab extends PluginSettingTab {
   plugin: ReferenceList;
   private semanticStatusTimer: number | null = null;
+  private batchStatusTimer: number | null = null;
 
   constructor(plugin: ReferenceList) {
     super(app, plugin);
@@ -139,6 +147,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     if (this.semanticStatusTimer !== null) {
       window.clearInterval(this.semanticStatusTimer);
       this.semanticStatusTimer = null;
+    }
+    if (this.batchStatusTimer !== null) {
+      window.clearInterval(this.batchStatusTimer);
+      this.batchStatusTimer = null;
     }
     super.hide();
   }
@@ -705,7 +717,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('原生语义检索（向量嵌入）')
-      .setDesc('启用后，检索结果会额外叠加“语义命中”分组：对全库 markdown 分块建立向量索引，可按语义而非仅关键词匹配。默认指向本地 Docker 的 jina-embeddings-v5-omni（OpenAI 兼容 /embeddings 接口）。')
+      .setDesc('启用后，检索结果会额外叠加“语义命中”分组：对全库 markdown 分块建立向量索引，可按语义而非仅关键词匹配。默认指向本地 Ollama 的 bge-m3（OpenAI 兼容 /v1/embeddings 接口）。')
       .addToggle((toggle) =>
         toggle
           .setValue(!!this.plugin.settings.enableNativeSemantic)
@@ -737,10 +749,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('嵌入 API 地址')
-      .setDesc('OpenAI 兼容嵌入接口基地址。本地 Docker：http://localhost:8080/v1；火山方舟：https://ark.cn-beijing.volces.com/api/v3（Embedding 需 /api/v3 而非套餐 /api/plan/v3）。')
+      .setDesc('OpenAI 兼容嵌入接口基地址。本地 Ollama：http://localhost:11434/v1；火山方舟：https://ark.cn-beijing.volces.com/api/v3（Embedding 需 /api/v3 而非套餐 /api/plan/v3）。')
       .addText((text) =>
         text
-          .setPlaceholder('http://localhost:8080/v1')
+          .setPlaceholder('http://localhost:11434/v1')
           .setValue(this.plugin.settings.semanticEmbedApiUrl || '')
           .onChange((value) => {
             this.plugin.settings.semanticEmbedApiUrl = value;
@@ -763,10 +775,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('嵌入模型')
-      .setDesc('本地 Docker：jina-embeddings-v5-omni；火山方舟：doubao-embedding-large-text-240915 等。')
+      .setDesc('本地 Ollama：bge-m3；火山方舟：doubao-embedding-large-text-240915 等。')
       .addText((text) =>
         text
-          .setPlaceholder('jina-embeddings-v5-omni')
+          .setPlaceholder('bge-m3')
           .setValue(this.plugin.settings.semanticEmbedModel || '')
           .onChange((value) => {
             this.plugin.settings.semanticEmbedModel = value.trim();
@@ -908,6 +920,101 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     }
     this.semanticStatusTimer = window.setInterval(renderSemanticStatus, 500);
 
+    // ---- 批量转换（所有附件）----
+    new Setting(containerEl).setName('批量转换（PDF/EPUB → MD）').setHeading();
+
+    const batchSetting = new Setting(containerEl)
+      .setName('附件转换统计')
+      .setDesc('统计当前文献库中所有 PDF/EPUB 附件的转换状态。统计完成后可一键批量转换。');
+
+    let batchStats: AttachmentStat | null = null;
+
+    const renderBatchStats = async () => {
+      try {
+        batchStats = await collectAttachmentStats(this.plugin);
+      } catch (e: any) {
+        debugLog('Settings', 'collectAttachmentStats failed', { error: e.message });
+        batchStats = null;
+      }
+      batchSetting.descEl.empty();
+      const b = getBatchProgress();
+      const st = batchStats;
+      if (st) {
+        batchSetting.descEl.createDiv({
+          cls: 'pwc-semantic-status-hint',
+          text: `共 ${st.total} 条文献：已转换 ${st.converted}，待转换 ${st.pending}，进行中 ${st.inProgress}，无附件 ${st.noAttachment}。`,
+        });
+      } else {
+        batchSetting.descEl.createDiv({
+          cls: 'pwc-semantic-status-hint',
+          text: '统计失败：请确认文献库已加载。',
+        });
+      }
+      if (b.running) {
+        const pct = b.total > 0 ? Math.round((b.done / b.total) * 100) : 0;
+        batchSetting.descEl.createDiv({
+          cls: 'pwc-semantic-progress-text',
+          text: `批量转换中：${b.done}/${b.total}（${pct}%），失败 ${b.failed}。${
+            b.currentCitekey ? `当前：${b.currentCitekey}` : ''
+          }`,
+        });
+        const bar = batchSetting.descEl.createDiv({
+          cls: 'pwc-conversion-progress-bar',
+        });
+        bar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' }).style.width = `${pct}%`;
+        if (b.pageProgress) {
+          const pp = b.pageProgress;
+          batchSetting.descEl.createDiv({
+            cls: 'pwc-semantic-progress-path',
+            text: `${pp.citekey}: ${pp.current}/${pp.total} ${pp.message || ''}`,
+          });
+        }
+      }
+    };
+
+    batchSetting.addButton((button) =>
+      button.setButtonText('刷新统计').onClick(async () => {
+        await renderBatchStats();
+      })
+    );
+
+    batchSetting.addButton((button) =>
+      button
+        .setButtonText('一键批量转换')
+        .setCta()
+        .onClick(async () => {
+          const b = getBatchProgress();
+          if (b.running) {
+            new Notice('批量转换已在进行中。');
+            return;
+          }
+          await runBatchConversion(this.plugin);
+          await renderBatchStats();
+        })
+    );
+
+    batchSetting.addButton((button) =>
+      button
+        .setButtonText('转换全部（含已转换）')
+        .setWarning()
+        .onClick(async () => {
+          const b = getBatchProgress();
+          if (b.running) {
+            new Notice('批量转换已在进行中。');
+            return;
+          }
+          const { forceReconvertAll } = await import('./converter/convertAll');
+          await forceReconvertAll(this.plugin);
+          await renderBatchStats();
+        })
+    );
+
+    renderBatchStats();
+    if (this.batchStatusTimer !== null) {
+      window.clearInterval(this.batchStatusTimer);
+    }
+    this.batchStatusTimer = window.setInterval(renderBatchStats, 500);
+
     new Setting(containerEl)
       .setName('交叉编码重排序（Rerank）')
       .setDesc('启用后，检索时把全文命中与语义命中的候选片段合并，交给交叉编码重排模型（默认本地 Docker 的 jina-reranker-v3）统一打分排序，输出“重排序命中”分组。重排服务不可用时会自动回退到普通全文/语义分组。')
@@ -922,10 +1029,10 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('重排序 API 地址')
-      .setDesc('本地 Docker：http://localhost:8080/v1（自动追加 /rerank 路径）。')
+      .setDesc('本地 Docker：http://localhost:8081/v1（自动追加 /rerank 路径）。')
       .addText((text) =>
         text
-          .setPlaceholder('http://localhost:8080/v1')
+          .setPlaceholder('http://localhost:8081/v1')
           .setValue(this.plugin.settings.rerankApiUrl || '')
           .onChange((value) => {
             this.plugin.settings.rerankApiUrl = value;

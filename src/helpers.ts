@@ -7,8 +7,16 @@ const path = require('path');
 const { createHash } = require('crypto');
 
 export function getVaultRoot() {
-  // This is a desktop only plugin, so assume adapter is FileSystemAdapter
-  return (app.vault.adapter as FileSystemAdapter).getBasePath();
+  // This is a desktop only plugin, so assume adapter is FileSystemAdapter.
+  // The global `app` is provided by Obsidian's runtime; guard the cast so a
+  // missing / differently-shaped adapter fails loudly instead of returning an
+  // undefined base path that silently corrupts cache locations.
+  const adapter = (app.vault?.adapter as FileSystemAdapter) ?? null;
+  const base = adapter?.getBasePath();
+  if (!base) {
+    throw new Error('getVaultRoot: Obsidian vault adapter is unavailable.');
+  }
+  return base;
 }
 
 /**
@@ -153,9 +161,12 @@ const BIB_DEBUG_ENABLED = false;
 
 export function debugLog(module: string, message: string, data?: any) {
   const timestamp = new Date().toISOString();
-  // Record to a global array for inspection if needed.
+  // Record to a global array for inspection if needed. Bound the array so a
+  // long-running session never leaks unbounded memory.
   if (!(window as any).BIB_DEBUG_LOGS) (window as any).BIB_DEBUG_LOGS = [];
   (window as any).BIB_DEBUG_LOGS.push({ timestamp, module, message, data });
+  const logs = (window as any).BIB_DEBUG_LOGS;
+  if (logs.length > 500) logs.splice(0, logs.length - 500);
   // Only write to the console when debugging is explicitly enabled.
   if (BIB_DEBUG_ENABLED) {
     const logMessage = `[BibShower][${timestamp}][${module}] ${message}`;

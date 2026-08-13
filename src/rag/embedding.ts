@@ -1,5 +1,4 @@
-import { requestUrl } from 'obsidian';
-import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
+import { postJson } from './httpClient';
 
 export interface EmbeddingSettings {
   apiUrl: string;
@@ -7,15 +6,18 @@ export interface EmbeddingSettings {
   model: string;
 }
 
-const EMBED_TIMEOUT_MS = 120000;
-const BATCH_SIZE = 32;
+// 32 texts × ~800 chars is the sweet spot for local Ollama (bge-m3). For very
+// large chunks we shrink the batch so a single request stays within the model
+// context window and completes before the timeout.
+const MAX_BATCH_SIZE = 32;
+const MAX_BATCH_CHARS = 32000;
 
 /**
  * Embed a list of texts via a text-embedding API (OpenAI-compatible
- * /embeddings endpoint). Works with Volcengine Ark and with local Docker
- * services (jina-embeddings-v3/v5, ...) — the latter usually expose the same
- * endpoint without authentication, so `apiKey` is optional and the
- * Authorization header is only sent when a key is configured.
+ * /embeddings endpoint). Works with Volcengine Ark and with local Ollama /
+ * Docker services (bge-m3, jina-embeddings-v3/v5, ...) — the latter usually
+ * expose the same endpoint without authentication, so `apiKey` is optional
+ * and the Authorization header is only sent when a key is configured.
  * Inputs are sent in batches; each request returns one embedding per item.
  */
 export async function embedTexts(
@@ -25,8 +27,8 @@ export async function embedTexts(
   if (texts.length === 0) return [];
 
   const out: number[][] = [];
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < texts.length; i += batchSizeFor(texts)) {
+    const batch = texts.slice(i, i + batchSizeFor(texts));
     const vecs = await embedBatch(batch, settings);
     if (vecs.length !== batch.length) {
       throw new Error(`嵌入结果数量不匹配（期望 ${batch.length}，实际 ${vecs.length}）。`);
@@ -36,23 +38,31 @@ export async function embedTexts(
   return out;
 }
 
+/** Cap a batch so its total characters stay within a sane request size. */
+function batchSizeFor(texts: string[]): number {
+  if (texts.length <= MAX_BATCH_SIZE) return MAX_BATCH_SIZE;
+  let chars = 0;
+  let n = 0;
+  for (const t of texts) {
+    chars += t.length;
+    n++;
+    if (chars >= MAX_BATCH_CHARS || n >= MAX_BATCH_SIZE) break;
+  }
+  return Math.max(1, n);
+}
+
 async function embedBatch(
   batch: string[],
   settings: EmbeddingSettings
 ): Promise<number[][]> {
   const url = settings.apiUrl.replace(/\/+$/, '') + '/embeddings';
-  const body = JSON.stringify({ model: settings.model, input: batch });
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const body = { model: settings.model, input: batch };
+  const headers: Record<string, string> = {};
   if (settings.apiKey) headers['Authorization'] = `Bearer ${settings.apiKey}`;
 
-  let response: RequestUrlResponse;
+  let response;
   try {
-    response = await requestUrlWithTimeout({
-      url,
-      method: 'POST',
-      headers,
-      body,
-    });
+    response = await postJson(url, body, headers);
   } catch (e: any) {
     throw new Error(`嵌入请求失败: ${e.message}`);
   }
@@ -75,17 +85,4 @@ export async function testEmbeddingConnection(settings: EmbeddingSettings): Prom
   const vecs = await embedTexts(['测试语义嵌入连接'], settings);
   if (!vecs[0]) throw new Error('嵌入返回为空');
   return vecs[0].length;
-}
-
-function requestUrlWithTimeout(opts: RequestUrlParam): Promise<RequestUrlResponse> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`嵌入请求超时(${EMBED_TIMEOUT_MS}ms)`)),
-      EMBED_TIMEOUT_MS
-    );
-  });
-  return Promise.race([requestUrl(opts), timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }

@@ -424,9 +424,10 @@ Rules:
 /**
  * Build a list of text candidates that are most likely to contain references:
  * the trailing bibliography plus the recovered footnote block(s). Chunks are
- * capped so each LLM call stays within the context window.
+ * capped so each LLM call stays within the context window. Exported so the
+ * chunking boundary behaviour (no infinite loop on tail chunks) is testable.
  */
-function buildReferenceCandidate(markdownContent: string): string[] {
+export function buildReferenceCandidate(markdownContent: string): string[] {
   const MAX_CHUNK = 20000;
   const OVERLAP = 2000;
 
@@ -461,6 +462,10 @@ function buildReferenceCandidate(markdownContent: string): string[] {
       if (boundary > start) end = boundary;
     }
     chunks.push(region.substring(start, end));
+    // Guard against the tail chunk: when end reaches the document end,
+    // `end - OVERLAP` would regress `start` and loop forever on the last
+    // window. Stop once the tail is consumed.
+    if (end >= region.length) break;
     start = end - OVERLAP;
   }
   return chunks;

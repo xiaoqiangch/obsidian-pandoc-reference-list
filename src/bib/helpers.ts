@@ -43,6 +43,51 @@ export function getBibPath(bibPath: string, getVaultRoot?: () => string) {
   return bibPath;
 }
 
+const BIB_FILE_VALID_EXTS = ['.pdf', '.epub', '.html', '.htm'];
+
+/**
+ * Parse the `file` field of a bibliography entry into absolute attachment
+ * paths. Shared by the plugin's BibManager and the standalone convert-all CLI
+ * so attachment resolution stays identical across both entry points.
+ *
+ * Accepts a single path, or Zotero's `path:subpath:type` semicolon list.
+ * Relative paths are resolved against `vaultRoot` (or the global `app` when
+ * running inside Obsidian).
+ */
+export function parseBibFileField(fileField: string, vaultRoot?: string): string[] {
+  if (!fileField) return [];
+
+  const hasValidExt = (p: string) => {
+    const ext = p.toLowerCase();
+    return BIB_FILE_VALID_EXTS.some((e) => ext.endsWith(e));
+  };
+
+  const cleaned = fileField.trim().replace(/^[{"]|["}]$/g, '');
+  if (cleaned) {
+    const full = path.isAbsolute(cleaned) ? cleaned : path.join(vaultRoot || '', cleaned);
+    if (hasValidExt(full) && fs.existsSync(full)) {
+      return [full];
+    }
+  }
+
+  const files = fileField.split(';');
+  const paths: string[] = [];
+  for (const f of files) {
+    const parts = f.split(':');
+    let p = parts.length >= 2 ? parts[1] : f;
+
+    if (p) {
+      p = p.trim();
+      p = p.replace(/^[{"]|["}]$/g, '');
+
+      if (p) {
+        paths.push(path.isAbsolute(p) ? p : path.join(vaultRoot || '', p));
+      }
+    }
+  }
+  return paths.filter((p) => hasValidExt(p));
+}
+
 export async function bibToCSL(
   bibPath: string,
   pathToPandoc: string,
@@ -151,12 +196,12 @@ export async function bibToCSL(
           currentEntry = { id: match[1].trim(), line: i + 1 };
           extraMap.set(currentEntry.id, { line: currentEntry.line });
         } else if (currentEntry) {
-          const fileMatch = line.match(/file\s*=\s*[\{\"]([^\"\}]+)[\}\"]/i);
+          const fileMatch = line.match(/file\s*=\s*[{"]([^"}]+)[}"]/i);
           if (fileMatch) {
             const existing = extraMap.get(currentEntry.id);
             extraMap.set(currentEntry.id, { ...existing, file: fileMatch[1].trim() });
           }
-          const dateMatch = line.match(/add_date\s*=\s*[\{\"]([^\"\}]+)[\}\"]/i);
+          const dateMatch = line.match(/add_date\s*=\s*[{"]([^"}]+)[}"]/i);
           if (dateMatch) {
             const existing = extraMap.get(currentEntry.id);
             (existing as any).addDate = dateMatch[1].trim();

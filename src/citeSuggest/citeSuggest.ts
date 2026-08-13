@@ -16,7 +16,7 @@ interface Loading {
   loading: boolean;
 }
 
-const triggerRE = /(^|[ \t\v[\-\r\n;])([\[【]?@)([\p{L}\p{N}:.#$%&\-+?<>~_/]*)$/u;
+const triggerRE = /(^|[ \t\v[\-\r\n;])([[【]?@)([\p{L}\p{N}:.#$%&\-+?<>~_/]*)$/u;
 
 export class CiteSuggest extends EditorSuggest<
   Fuse.FuseResult<PartialCSLEntry> | Loading
@@ -56,18 +56,15 @@ export class CiteSuggest extends EditorSuggest<
   }
 
   getSuggestions(context: EditorSuggestContext) {
-    console.log('CiteSuggest: getSuggestions called', context.query);
     if (
       context.query === undefined ||
       context.query.includes(' ')
     ) {
-      console.log('CiteSuggest: query is undefined or contains space');
       return null;
     }
 
     const { plugin } = this;
     if (!plugin.initPromise.settled) {
-      console.log('CiteSuggest: plugin not settled');
       return null;
     }
 
@@ -77,18 +74,13 @@ export class CiteSuggest extends EditorSuggest<
     if (bibManager.fileCache.has(context.file)) {
       const cache = bibManager.fileCache.get(context.file);
       fuse = cache.source.fuse;
-      console.log('CiteSuggest: using file-specific fuse');
-    } else {
-      console.log('CiteSuggest: using global fuse');
     }
 
     if (!fuse) {
-      console.log('CiteSuggest: no fuse instance found');
       return null;
     }
 
     if (context.query.length === 0) {
-      console.log('CiteSuggest: empty query, returning default suggestions');
       // Return some default suggestions if query is empty
       let entries: PartialCSLEntry[] = [];
       if (bibManager.fileCache.has(context.file)) {
@@ -98,7 +90,6 @@ export class CiteSuggest extends EditorSuggest<
         entries = Array.from(bibManager.bibCache.values());
       }
 
-      console.log(`CiteSuggest: found ${entries.length} entries`);
       return entries.slice(0, this.limit).map((item, index) => ({
         item,
         refIndex: index,
@@ -109,7 +100,6 @@ export class CiteSuggest extends EditorSuggest<
       limit: this.limit,
     });
 
-    console.log(`CiteSuggest: search results count: ${results?.length || 0}`);
     return results?.length ? results : null;
   }
 
@@ -117,7 +107,6 @@ export class CiteSuggest extends EditorSuggest<
     suggestion: Fuse.FuseResult<PartialCSLEntry> | Loading,
     el: HTMLElement
   ): void {
-    console.log('CiteSuggest: rendering suggestion', suggestion);
     const frag = createFragment();
 
     if ((suggestion as { loading: boolean }).loading) {
@@ -245,7 +234,6 @@ export class CiteSuggest extends EditorSuggest<
     if (!match) {
       return null;
     }
-    console.log('CiteSuggest: onTrigger matched', match[0]);
     this.lastSelect = null;
 
     if (!this.context && pullFromZotero) {
@@ -258,7 +246,6 @@ export class CiteSuggest extends EditorSuggest<
       ch: triggerIndex,
     };
 
-    console.log('CiteSuggest: trigger query', match[3]);
     return {
       start: startPos,
       end: cursor,

@@ -99,7 +99,8 @@ export class SemanticIndexer {
 
   get enabled(): boolean {
     // An API key is not strictly required: local Docker embedding services
-    // (jina-embeddings-v5-omni, ...) expose the same OpenAI-compatible
+    // (Ollama bge-m3 / jina-embeddings-v5-omni, ...) expose the same
+    // OpenAI-compatible
     // endpoint with no authentication.
     return this.settings.enabled;
   }
@@ -118,6 +119,10 @@ export class SemanticIndexer {
       if (!fs.existsSync(cacheJsonPath) || !fs.existsSync(cacheBinPath)) return false;
       const raw = JSON.parse(fs.readFileSync(this.cacheJsonPath, 'utf-8'));
       if (!raw || raw.version !== CACHE_VERSION) return false;
+      // A different embedding model produces vectors with a different
+      // dimensionality; mixing them would yield garbage search results, so
+      // treat a model change as cache-invalid and force a rebuild.
+      if (raw.model && this.settings.model && raw.model !== this.settings.model) return false;
       this.index.model = raw.model || '';
       const bin = fs.readFileSync(this.cacheBinPath);
       this.index.loadFrom(raw, bin);
@@ -271,18 +276,25 @@ export class SemanticIndexer {
    * Count vault md files that still need embedding: those missing from the
    * index or changed since their last embed. Pure stat comparison — no API
    * calls, no file reads — safe to run at startup and in the settings view.
+   *
+   * When the currently configured model differs from the model the in-memory
+   * index was built with (e.g. the user switched the embedding model), every
+   * eligible file is considered pending so the misleading "索引已是最新" state
+   * cannot appear before a rebuild.
    */
   countPendingFiles(): number {
+    const modelMismatch =
+      !!this.index.model && !!this.settings.model && this.index.model !== this.settings.model;
     let pending = 0;
     let total = 0;
     const files = this.app.vault.getMarkdownFiles();
     for (const f of files) {
       if (!shouldIndexPath(f.path, undefined, this.indexOptions())) continue;
       total++;
-      if (docChanged(this.index.getMeta(f.path), f.stat)) pending++;
+      if (modelMismatch || docChanged(this.index.getMeta(f.path), f.stat)) pending++;
     }
     this.pendingCount = pending;
-    debugLog('SemanticIndexer', 'countPendingFiles', { total, pending });
+    debugLog('SemanticIndexer', 'countPendingFiles', { total, pending, modelMismatch });
     return pending;
   }
 

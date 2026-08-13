@@ -426,10 +426,12 @@ export default class ReferenceList extends Plugin {
           // Use a larger delay to ensure the file is fully written and Obsidian has time to process
           setTimeout(async () => {
             try {
-              // @ts-ignore
-              await this.app.plugins.disablePlugin(this.manifest.id);
-              // @ts-ignore
-              await this.app.plugins.enablePlugin(this.manifest.id);
+              // disablePlugin/enablePlugin are not in the public Obsidian
+              // types; call them via a relaxed plugin-manager reference for
+              // hot-reload only (dev convenience, guarded by the try/catch).
+              const plugins = (this.app as any).plugins;
+              await plugins.disablePlugin(this.manifest.id);
+              await plugins.enablePlugin(this.manifest.id);
               console.log('Bib Manager: Hot reloaded');
             } catch (e) {
               console.error('Hot reload failed', e);
