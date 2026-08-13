@@ -402,6 +402,10 @@ export class SemanticIndexer {
   /** Embed the query (cached) and return the top chunk hits. */
   async search(query: string, topK?: number, minSimilarity?: number): Promise<SemanticVectorHit[]> {
     if (!this.enabled || this.index.chunkCount === 0) return [];
+    // Without an embedding service we cannot embed the query, so semantic
+    // search is unavailable on this machine (index may still be loaded from
+    // iCloud for inspection, but query embedding requires the service).
+    if (!this.embeddingAvailable) return [];
     const k = topK ?? this.settings.topK ?? 20;
     const min = minSimilarity ?? 0;
 

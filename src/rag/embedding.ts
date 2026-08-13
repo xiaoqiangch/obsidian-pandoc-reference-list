@@ -88,37 +88,42 @@ export async function testEmbeddingConnection(settings: EmbeddingSettings): Prom
   return vecs[0].length;
 }
 
-const PROBE_TIMEOUT_MS = 3000;
+const PROBE_TIMEOUT_MS = 8000;
 
 /**
- * Fast reachability probe for a local embedding service (Ollama). Used on
- * machines that may not run the embedding service at all: when the service is
+ * Reachability probe for a local embedding service (Ollama). Used on machines
+ * that may not run the embedding service at all: when the service is
  * unreachable, the plugin must NOT build / overwrite the synced index — it
  * should only read the iCloud-synced copy.
  *
- * For local hosts we hit the Ollama version endpoint (cheap, no model load).
- * For remote/cloud URLs we assume the service is available when a key is set
- * (the full connection test is done by the settings panel's "测试连接").
+ * For local hosts we issue a real one-shot POST to /embeddings (the same
+ * endpoint embedding uses). A 200 with a `data` array proves the endpoint
+ * actually serves embeddings; checking /api/version is insufficient because
+ * another process may occupy the port and answer 200 to unrelated paths while
+ * 404'ing /embeddings. For remote/cloud URLs we assume the service is
+ * available when a key is set (the full connection test is done by the
+ * settings panel's "测试连接").
  */
 export async function isEmbeddingServiceAvailable(settings: EmbeddingSettings): Promise<boolean> {
   const base = settings.apiUrl.replace(/\/+$/, '');
   if (!isLocalApiUrl(base)) {
     return !!settings.apiKey;
   }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-    try {
-      // Ollama exposes /api/version; a 200 means the service is up.
-      const res = await fetch(base.replace(/\/v1$/, '') + '/api/version', {
-        method: 'GET',
-        signal: controller.signal,
-      });
-      return res.ok;
-    } finally {
-      clearTimeout(timer);
-    }
+    const res = await fetch(base + '/embeddings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: settings.model, input: ['probe'] }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const json = await res.json().catch(() => null);
+    return Array.isArray(json?.data) && json.data.length > 0;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
