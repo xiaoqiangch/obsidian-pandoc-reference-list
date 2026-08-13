@@ -533,22 +533,23 @@ export default class ReferenceList extends Plugin {
       if (!loaded) {
         const pending = this.semanticIndexer.countPendingFiles();
         new Notice(
-          `语义索引未构建（共 ${pending} 个文件）：为避免启动即占满 CPU，请在有需要时在设置中点击“重建语义索引”手动构建。`
+          `语义索引未构建（共 ${pending} 个文件）：将在后台分批自动嵌入（每 30 秒一批），不会占满 CPU；如需立即全量构建，请在设置中点击“重建语义索引”。`
         );
-        debugLog('Main', 'Semantic index not built; manual rebuild required', { files: pending });
+        await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
+        this.semanticIndexer.countPendingFiles();
+        debugLog('Main', 'Semantic index first build started (paced auto drain)', { files: pending });
       } else {
         const pending = this.semanticIndexer.countPendingFiles();
         if (pending > 0) {
-          // Do NOT auto-embed a large backlog at startup: in big vaults this
-          // pins the embedding service / CPU. New/edited notes are still
-          // embedded automatically via file events (small deltas only); a large
-          // backlog is drained by a manual "增量更新".
+          // Draining a large backlog is paced (see SemanticIndexer): at most a
+          // few files per 30s, so the embedding service / CPU is never pegged
+          // while the index still catches up in the background.
           new Notice(
-            `语义索引有 ${pending} 个文件待嵌入：新增/修改的笔记会自动嵌入；如需立即补齐，请点击“增量更新”。`
+            `语义索引有 ${pending} 个文件待嵌入：将在后台分批自动嵌入（每 30 秒一批）。如需立即补齐，请点击“增量更新”。`
           );
-          debugLog('Main', 'Semantic index has pending files; manual incremental update recommended', {
-            files: pending,
-          });
+          await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
+          this.semanticIndexer.countPendingFiles();
+          debugLog('Main', 'Semantic index backlog drain started (paced auto)', { files: pending });
         }
       }
     } catch (e: any) {

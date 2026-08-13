@@ -12,13 +12,16 @@ const path = require('path');
 const CACHE_VERSION = 1;
 // Every file costs embedding API calls, so yield between files more often.
 const IDLE_BATCH = 5;
-// A background (auto) run — startup or a file event — embeds only *small*
-// deltas (a note the user just created or edited). When more than this many
-// files are pending, the auto run skips entirely and leaves the backlog to a
-// manual "重建语义索引" / "增量更新". Auto-draining a large backlog (e.g. the
-// first build of a big vault) would keep the embedding service / CPU pegged
-// for an unbounded time.
-const MAX_AUTO_RUN_FILES = 20;
+// A single background (auto) run embeds at most this many files. A large
+// pending backlog (e.g. the first build of a big vault) is drained gradually:
+// one batch per MIN_AUTO_RUN_INTERVAL_MS. This keeps embedding progress going
+// in the background without pinning the CPU / embedding service like a one-shot
+// full build would.
+const MAX_AUTO_RUN_FILES = 10;
+// Minimum gap between two auto-run batches that are draining a large backlog.
+// The embedding model (e.g. bge-m3) is CPU-bound, so batches are spaced out to
+// keep the machine responsive while the index still catches up over time.
+const MIN_AUTO_RUN_INTERVAL_MS = 30000;
 
 export interface SemanticIndexerSettings {
   enabled: boolean;
@@ -47,10 +50,11 @@ export interface IndexProgress {
 
 /**
  * Options for build/update runs. `auto` marks background runs (startup, file
- * events): auto incremental runs embed only small deltas (≤ maxFiles pending
- * files) and skip large backlogs, leaving them to manual runs; auto build runs
- * never rebuild from scratch. Manual runs (commands / settings buttons) are
- * unbounded and always perform a full sync.
+ * events): auto incremental runs embed at most `maxFiles` files per run and
+ * space out large-backlog batches by {@link MIN_AUTO_RUN_INTERVAL_MS} so the
+ * index keeps progressing without pinning the CPU / embedding service; auto
+ * build runs never rebuild from scratch. Manual runs (commands / settings
+ * buttons) are unbounded and always perform a full sync.
  */
 export interface IndexRunOptions {
   auto?: boolean;
@@ -83,6 +87,9 @@ export class SemanticIndexer {
   private busy = false;
   private cacheDirty = false;
   private saveTimer: any = null;
+  private followUpTimer: any = null;
+  /** Timestamp of the last auto-run batch that drained part of a backlog. */
+  private lastAutoRunAt = 0;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
   /**
    * Whether the embedding service is reachable on this machine. When false the
@@ -372,12 +379,40 @@ export class SemanticIndexer {
       // "重建语义索引" / "增量更新": auto-draining thousands of files would keep
       // the embedding service (and CPU) pegged for an unbounded time, and is
       // exactly what happened during startup in large vaults.
-      const targets = changed;
+      // Background (auto) runs: small deltas (a note the user just created or
+      // edited) are embedded immediately. A large backlog is drained gradually
+      // — at most MAX_AUTO_RUN_FILES per run, spaced by MIN_AUTO_RUN_INTERVAL_MS
+      // — so the index still progresses without pinning the CPU / embedding
+      // service like a one-shot full build would.
+      let targets = changed;
       if (opts?.auto && changed.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
-        debugLog('SemanticIndexer', 'incrementalUpdate skipped: large backlog left to manual build', {
-          changed: changed.length,
-        });
-        return;
+        const elapsed = Date.now() - this.lastAutoRunAt;
+        const remaining = MIN_AUTO_RUN_INTERVAL_MS - elapsed;
+        if (remaining > 0) {
+          // Throttled: skip this batch, schedule the next one when allowed.
+          debugLog('SemanticIndexer', 'incrementalUpdate throttled (backlog drain rate limit)', {
+            changed: changed.length,
+            nextInMs: remaining,
+          });
+          this.scheduleFollowUp(remaining);
+          return;
+        }
+        this.lastAutoRunAt = Date.now();
+        // Pick the first files for this batch, bounded by BOTH a file count and
+        // an estimated chunk budget so one huge file cannot monopolize a batch
+        // (a 1MB note alone would embed ~1k chunks in a single run).
+        const maxFiles = opts.maxFiles ?? MAX_AUTO_RUN_FILES;
+        const budgetChunks = 200;
+        targets = [];
+        let estChunks = 0;
+        for (const f of changed) {
+          if (targets.length >= maxFiles) break;
+          const est = Math.max(1, Math.ceil((f.stat.size || 0) / Math.max(1, this.settings.chunkSize)));
+          if (estChunks + est > budgetChunks && targets.length > 0) break;
+          estChunks += est;
+          targets.push(f);
+        }
+        this.scheduleFollowUp(MIN_AUTO_RUN_INTERVAL_MS);
       }
 
       this.failedCount = 0;
@@ -405,12 +440,33 @@ export class SemanticIndexer {
       if (targets.length > 0 || current.size !== this.index.docCount) {
         this.scheduleSave();
       }
-      debugLog('SemanticIndexer', 'Incremental update finished', { changed: targets.length });
+      debugLog('SemanticIndexer', 'Incremental update finished', {
+        changed: targets.length,
+        backlog: changed.length - targets.length,
+      });
     } finally {
       this.busy = false;
       this.building = false;
       this.progress = null;
     }
+  }
+
+  /**
+   * Schedule a follow-up background run so a large pending backlog keeps being
+   * drained over time (see {@link MIN_AUTO_RUN_INTERVAL_MS}). Follow-ups use
+   * the same bounded auto-run settings.
+   */
+  private scheduleFollowUp(delayMs: number): void {
+    if (this.followUpTimer) return;
+    this.followUpTimer = setTimeout(() => {
+      this.followUpTimer = null;
+      if (!this.enabled) return;
+      if (this.busy) {
+        this.scheduleFollowUp(MIN_AUTO_RUN_INTERVAL_MS);
+        return;
+      }
+      this.incrementalUpdate(undefined, { auto: true }).catch(() => {});
+    }, Math.max(delayMs, 1000));
   }
 
   /**
@@ -501,6 +557,10 @@ export class SemanticIndexer {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
+    }
+    if (this.followUpTimer) {
+      clearTimeout(this.followUpTimer);
+      this.followUpTimer = null;
     }
     if (this.cacheDirty) this.writeCache();
   }
