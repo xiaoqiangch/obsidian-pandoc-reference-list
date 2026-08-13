@@ -136,3 +136,65 @@ describe('SemanticIndexer dynamic embedding availability', () => {
     expect(hits).toEqual([]);
   });
 });
+
+describe('SemanticIndexer bounded auto runs', () => {
+  beforeEach(() => {
+    mockProbe.mockReset();
+    mockProbe.mockResolvedValue(true);
+  });
+
+  const makeManyFiles = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      path: `notes/f${i}.md`,
+      stat: { mtime: Date.now(), size: 100 },
+      extension: 'md',
+    }));
+
+  test('auto incrementalUpdate only embeds the run cap and leaves the backlog for follow-ups', async () => {
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => makeManyFiles(25);
+    app.vault.cachedRead = async () => 'content x'.repeat(50);
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+
+    // Background/auto run is capped: only MAX_AUTO_RUN_FILES (20) are embedded.
+    await indexer.incrementalUpdate(undefined, { auto: true });
+    expect(indexer.building).toBe(false);
+    expect(indexer.index.docCount).toBe(20);
+
+    // Manual runs are unbounded and drain the remaining backlog.
+    await indexer.incrementalUpdate();
+    expect(indexer.index.docCount).toBe(25);
+
+    indexer.destroy();
+  });
+
+  test('manual incrementalUpdate embeds everything in a single run', async () => {
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => makeManyFiles(25);
+    app.vault.cachedRead = async () => 'content x'.repeat(50);
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+
+    await indexer.incrementalUpdate();
+    expect(indexer.index.docCount).toBe(25);
+
+    indexer.destroy();
+  });
+
+  test('auto buildAll is capped; manual buildAll is full', async () => {
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => makeManyFiles(25);
+    app.vault.cachedRead = async () => 'content x'.repeat(50);
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+
+    await indexer.buildAll(undefined, { auto: true });
+    expect(indexer.index.docCount).toBe(20);
+
+    await indexer.buildAll();
+    expect(indexer.index.docCount).toBe(25);
+
+    indexer.destroy();
+  });
+});

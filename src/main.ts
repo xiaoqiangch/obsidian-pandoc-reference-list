@@ -176,9 +176,10 @@ export default class ReferenceList extends Plugin {
         // incrementalUpdate on every run, so a machine whose Ollama service
         // comes back online (or whose API config was fixed) automatically
         // resumes indexing without a plugin reload; an unreachable service is
-        // simply skipped.
+        // simply skipped. Auto runs are bounded (see SemanticIndexer) so a
+        // large pending backlog cannot pin the CPU / embedding service.
         if (this.semanticIndexer.enabled) {
-          this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p)).catch(() => {});
+          this.semanticIndexer.incrementalUpdate(undefined, { auto: true }).catch(() => {});
         }
       },
       5000,
@@ -307,6 +308,14 @@ export default class ReferenceList extends Plugin {
             file.extension === 'json' ||
             file.extension === 'yaml')
         ) {
+          // Ignore the plugin's own semantic-index cache (.bib-manager/): the
+          // indexer writes semantic-index.json there via direct fs, which the
+          // vault watcher reports as a modify event. Re-initing the whole
+          // bibliography on every index save churns CPU while the index is
+          // being (re)built.
+          if (file.path === '.bib-manager' || file.path.startsWith('.bib-manager/')) {
+            return;
+          }
           this.bibManager.reinit(true).then(() => this.processReferences());
         }
       })
@@ -523,15 +532,15 @@ export default class ReferenceList extends Plugin {
       }
       if (!loaded) {
         const pending = this.semanticIndexer.countPendingFiles();
-        new Notice(`语义索引未构建：开始自动嵌入 ${pending} 个文件（首次构建）。`);
-        await this.semanticIndexer.buildAll((p) => this.reportSemanticProgress(p));
+        new Notice(`语义索引未构建：开始自动嵌入 ${pending} 个文件（首次构建，分批进行）。`);
+        await this.semanticIndexer.buildAll(undefined, { auto: true });
         this.semanticIndexer.countPendingFiles();
         debugLog('Main', 'Semantic index auto-built', { files: pending });
       } else {
         const pending = this.semanticIndexer.countPendingFiles();
         if (pending > 0) {
-          new Notice(`语义索引有 ${pending} 个文件待嵌入：开始自动增量更新。`);
-          await this.semanticIndexer.incrementalUpdate((p) => this.reportSemanticProgress(p));
+          new Notice(`语义索引有 ${pending} 个文件待嵌入：开始自动增量更新（分批进行）。`);
+          await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
           this.semanticIndexer.countPendingFiles();
           debugLog('Main', 'Semantic index auto-updated', { files: pending });
         }

@@ -12,6 +12,13 @@ const path = require('path');
 const CACHE_VERSION = 1;
 // Every file costs embedding API calls, so yield between files more often.
 const IDLE_BATCH = 5;
+// A single auto-triggered run (startup / file events) embeds at most this many
+// files. A huge pending backlog (e.g. first build of a large vault) is drained
+// across multiple self-scheduled follow-up runs so a restart cannot pin the
+// CPU / embedding service for an unbounded amount of time.
+const MAX_AUTO_RUN_FILES = 20;
+// Delay before a follow-up run continues draining a large pending backlog.
+const AUTO_RUN_FOLLOWUP_MS = 30000;
 
 export interface SemanticIndexerSettings {
   enabled: boolean;
@@ -36,6 +43,17 @@ export interface IndexProgress {
   path: string;
   /** Number of files skipped because embedding / reading failed. */
   failed: number;
+}
+
+/**
+ * Options for build/update runs. `auto` marks background runs (startup, file
+ * events): they are bounded to `maxFiles` files per run and continue via
+ * self-scheduled follow-ups, so a huge pending backlog cannot monopolize the
+ * embedding service. Manual runs (commands / settings buttons) are unbounded.
+ */
+export interface IndexRunOptions {
+  auto?: boolean;
+  maxFiles?: number;
 }
 
 /**
@@ -64,6 +82,7 @@ export class SemanticIndexer {
   private busy = false;
   private cacheDirty = false;
   private saveTimer: any = null;
+  private followUpTimer: any = null;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
   /**
    * Whether the embedding service is reachable on this machine. When false the
@@ -257,7 +276,10 @@ export class SemanticIndexer {
   }
 
   /** Rebuild the semantic index from scratch for all eligible markdown files. */
-  async buildAll(onProgress?: (p: IndexProgress) => void): Promise<void> {
+  async buildAll(
+    onProgress?: (p: IndexProgress) => void,
+    opts?: IndexRunOptions
+  ): Promise<void> {
     if (this.busy) return;
     if (!(await this.ensureEmbeddingAvailable())) {
       debugLog('SemanticIndexer', 'buildAll skipped: embedding service unavailable (read-only index)');
@@ -267,9 +289,15 @@ export class SemanticIndexer {
     this.building = true;
     this.progress = null;
     try {
-      const files = this.app.vault
+      let files = this.app.vault
         .getMarkdownFiles()
         .filter((f) => shouldIndexPath(f.path, undefined, this.indexOptions()));
+      // Bound background runs: when a huge backlog exists, build only the first
+      // `maxFiles` now and let follow-up runs finish the rest incrementally.
+      if (opts?.auto && files.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
+        files = files.slice(0, opts.maxFiles ?? MAX_AUTO_RUN_FILES);
+        this.scheduleFollowUp();
+      }
       this.index = new SemanticVectorIndex();
       this.index.model = this.settings.model;
       this.failedCount = 0;
@@ -304,7 +332,10 @@ export class SemanticIndexer {
   }
 
   /** Diff against the current file list and embed only what changed. */
-  async incrementalUpdate(onProgress?: (p: IndexProgress) => void): Promise<void> {
+  async incrementalUpdate(
+    onProgress?: (p: IndexProgress) => void,
+    opts?: IndexRunOptions
+  ): Promise<void> {
     if (this.busy || !this.enabled) return;
     if (!(await this.ensureEmbeddingAvailable())) {
       debugLog('SemanticIndexer', 'incrementalUpdate skipped: embedding service unavailable (read-only index)');
@@ -335,37 +366,68 @@ export class SemanticIndexer {
         }
       }
 
+      // Bound background runs: a huge backlog (first build of a large vault,
+      // many pending files) is drained over multiple runs — each run embeds at
+      // most `maxFiles` files and schedules a follow-up to continue, so the
+      // CPU / embedding service is never monopolized for an unbounded time.
+      let targets = changed;
+      const cap = opts?.auto
+        ? (opts.maxFiles ?? MAX_AUTO_RUN_FILES)
+        : Number.MAX_SAFE_INTEGER;
+      if (changed.length > cap) {
+        targets = changed.slice(0, cap);
+        this.scheduleFollowUp();
+      }
+
       this.failedCount = 0;
-      for (let i = 0; i < changed.length; i++) {
+      for (let i = 0; i < targets.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         try {
-          await this.indexFile(changed[i]);
+          await this.indexFile(targets[i]);
         } catch (e: any) {
           this.failedCount++;
           debugLog('SemanticIndexer', 'indexFile failed during incremental update', {
-            path: changed[i].path,
+            path: targets[i].path,
             error: e.message,
           });
           continue;
         }
         this.progress = {
           done: i + 1,
-          total: changed.length,
-          path: changed[i].path,
+          total: targets.length,
+          path: targets[i].path,
           failed: this.failedCount,
         };
         onProgress?.(this.progress);
       }
 
-      if (changed.length > 0 || current.size !== this.index.docCount) {
+      if (targets.length > 0 || current.size !== this.index.docCount) {
         this.scheduleSave();
       }
-      debugLog('SemanticIndexer', 'Incremental update finished', { changed: changed.length });
+      debugLog('SemanticIndexer', 'Incremental update finished', { changed: targets.length, backlog: changed.length - targets.length });
     } finally {
       this.busy = false;
       this.building = false;
       this.progress = null;
     }
+  }
+
+  /**
+   * Schedule a follow-up background run so a large pending backlog is drained
+   * incrementally instead of blocking the CPU / embedding service all at once.
+   * The follow-up uses the same bounded auto-run settings.
+   */
+  private scheduleFollowUp(): void {
+    if (this.followUpTimer) return;
+    this.followUpTimer = setTimeout(() => {
+      this.followUpTimer = null;
+      if (!this.enabled) return;
+      if (this.busy) {
+        this.scheduleFollowUp();
+        return;
+      }
+      this.incrementalUpdate(undefined, { auto: true }).catch(() => {});
+    }, AUTO_RUN_FOLLOWUP_MS);
   }
 
   /**
@@ -456,6 +518,10 @@ export class SemanticIndexer {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
+    }
+    if (this.followUpTimer) {
+      clearTimeout(this.followUpTimer);
+      this.followUpTimer = null;
     }
     if (this.cacheDirty) this.writeCache();
   }
