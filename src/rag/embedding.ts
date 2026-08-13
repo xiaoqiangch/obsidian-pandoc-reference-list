@@ -89,6 +89,12 @@ export async function testEmbeddingConnection(settings: EmbeddingSettings): Prom
 }
 
 const PROBE_TIMEOUT_MS = 8000;
+/** Delay between availability-probe retries (startup network warm-up). */
+const PROBE_RETRY_DELAY_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Reachability probe for a local embedding service (Ollama). Used on machines
@@ -109,21 +115,25 @@ export async function isEmbeddingServiceAvailable(settings: EmbeddingSettings): 
   if (!isLocalApiUrl(base)) {
     return !!settings.apiKey;
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-  try {
-    const res = await fetch(base + '/embeddings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: settings.model, input: ['probe'] }),
-      signal: controller.signal,
-    });
-    if (!res.ok) return false;
-    const json = await res.json().catch(() => null);
-    return Array.isArray(json?.data) && json.data.length > 0;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
+  // Use the same transport as real embedding requests (postJson → fetch +
+  // res.text() + JSON.parse). Obsidian's renderer can transiently stall the
+  // first localhost fetch right after startup (network stack still warming up
+  // / shared with other plugins), so retry a couple of times before deciding
+  // the engine is unavailable.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await postJson(
+        base + '/embeddings',
+        { model: settings.model, input: ['probe'] },
+        {},
+        PROBE_TIMEOUT_MS
+      );
+      const ok = Array.isArray(res.json?.data) && res.json.data.length > 0;
+      if (ok) return true;
+    } catch {
+      // retry below
+    }
+    if (attempt < 2) await sleep(PROBE_RETRY_DELAY_MS);
   }
+  return false;
 }

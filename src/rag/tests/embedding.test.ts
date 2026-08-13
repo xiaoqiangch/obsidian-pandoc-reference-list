@@ -36,7 +36,7 @@ describe('isEmbeddingServiceAvailable', () => {
   });
 
   test('returns false when the local endpoint answers 404 (port taken by non-embedding service)', async () => {
-    const res = { ok: false, status: 404, json: async () => ({}) } as Response;
+    const res = { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     global.fetch = jest.fn(() => Promise.resolve(res)) as any;
     const ok = await isEmbeddingServiceAvailable({
       apiUrl: 'http://localhost:11434/v1',
@@ -50,6 +50,7 @@ describe('isEmbeddingServiceAvailable', () => {
     const res = {
       ok: true,
       status: 200,
+      text: async () => JSON.stringify({ data: [] }),
       json: async () => ({ data: [] }),
     } as unknown as Response;
     global.fetch = jest.fn(() => Promise.resolve(res)) as any;
@@ -65,6 +66,7 @@ describe('isEmbeddingServiceAvailable', () => {
     const res = {
       ok: true,
       status: 200,
+      text: async () => JSON.stringify({ data: [{ embedding: [0.1, 0.2], index: 0 }] }),
       json: async () => ({ data: [{ embedding: [0.1, 0.2], index: 0 }] }),
     } as unknown as Response;
     global.fetch = jest.fn(() => Promise.resolve(res)) as any;
