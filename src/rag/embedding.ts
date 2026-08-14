@@ -25,11 +25,16 @@ export async function embedTexts(
   texts: string[],
   settings: EmbeddingSettings
 ): Promise<number[][]> {
-  if (texts.length === 0) return [];
+  // Never send empty / null / whitespace-only inputs to the embedding service:
+  // Ollama rejects `input: []` / `[null]` with HTTP 400 "invalid input", and a
+  // caller that passes undefined (e.g. a search without a query) would
+  // otherwise surface as a 400 in the console.
+  const clean = texts.filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
+  if (clean.length === 0) return [];
 
   const out: number[][] = [];
-  for (let i = 0; i < texts.length; i += batchSizeFor(texts)) {
-    const batch = texts.slice(i, i + batchSizeFor(texts));
+  for (let i = 0; i < clean.length; i += batchSizeFor(clean)) {
+    const batch = clean.slice(i, i + batchSizeFor(clean));
     const vecs = await embedBatch(batch, settings);
     if (vecs.length !== batch.length) {
       throw new Error(`嵌入结果数量不匹配（期望 ${batch.length}，实际 ${vecs.length}）。`);
@@ -88,7 +93,11 @@ export async function testEmbeddingConnection(settings: EmbeddingSettings): Prom
   return vecs[0].length;
 }
 
-const PROBE_TIMEOUT_MS = 8000;
+// The probe must wait longer than one embedding batch. Local CPU Ollama
+// processes 32-text batches serially and each batch can take 30–60s, so an 8s
+// probe times out (and gets aborted → server logs 400) as soon as the queue is
+// backed up, falsely marking the service unavailable.
+const PROBE_TIMEOUT_MS = 30000;
 /** Delay between availability-probe retries (startup network warm-up). */
 const PROBE_RETRY_DELAY_MS = 1000;
 

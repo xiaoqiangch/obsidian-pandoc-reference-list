@@ -1,4 +1,4 @@
-import { App, TFile } from 'obsidian';
+import { App, Notice, TFile } from 'obsidian';
 import { debugLog, getCacheRoot, getVaultRoot } from '../helpers';
 import { SemanticVectorIndex, SemanticVectorHit } from './vectorIndex';
 import { chunkByLines } from './chunker';
@@ -475,6 +475,14 @@ export class SemanticIndexer {
 
       this.failedCount = 0;
       let indexed = 0;
+      // Manual runs over a large pending backlog (e.g. first build of a big
+      // vault) embed serially and can take a long time on a local CPU service;
+      // surface that so the run does not look stalled.
+      if (!opts?.auto && targets.length > 100) {
+        new Notice(
+          `增量更新：还有 ${targets.length} 个文件待嵌入，本地串行处理预计需要较长时间（每批 32 个分块约 30–60 秒）。`
+        );
+      }
       for (let i = 0; i < targets.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
         try {
@@ -655,6 +663,9 @@ export class SemanticIndexer {
   /** Embed the query (cached) and return the top chunk hits. */
   async search(query: string, topK?: number, minSimilarity?: number): Promise<SemanticVectorHit[]> {
     if (!this.enabled || this.index.chunkCount === 0) return [];
+    // An empty/undefined query would be sent to the embedding API as a
+    // `[null]` input and rejected with HTTP 400.
+    if (!query || !query.trim()) return [];
     // Without an embedding service we cannot embed the query, so semantic
     // search is unavailable on this machine (index may still be loaded from
     // iCloud for inspection, but query embedding requires the service).
