@@ -92,6 +92,39 @@ describe('collectAttachmentStats', () => {
     expect(stat.inProgress).toBe(1);
     expect(stat.pending).toBe(0);
   });
+
+  test('converted md still counts as converted when the attachment cannot be resolved', async () => {
+    // Zotero offline / attachment moved: getAttachmentPath returns null even
+    // though the conversion output exists. These must not be reported as 无附件.
+    const plugin = makePlugin([{ id: 'a' }, { id: 'b' }]);
+    mockedGet.mockResolvedValue(null);
+    writeConvertedMd('a');
+
+    const stat = await collectAttachmentStats(plugin);
+    expect(stat.total).toBe(2);
+    expect(stat.converted).toBe(1);
+    expect(stat.noAttachment).toBe(1);
+    expect(stat.pending).toBe(0);
+  });
+
+  test('every entry is counted in exactly one bucket', async () => {
+    const plugin = makePlugin([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]);
+    mockedGet.mockImplementation(async (entry: any) =>
+      entry.id === 'd' ? null : `/x/${entry.id}.pdf`
+    );
+    mockedInProgress.mockImplementation((id: string) => id === 'c');
+    writeConvertedMd('a');
+
+    const stat = await collectAttachmentStats(plugin);
+    expect(stat.converted + stat.pending + stat.inProgress + stat.noAttachment).toBe(stat.total);
+    expect(stat).toMatchObject({
+      total: 4,
+      converted: 1,
+      pending: 1,
+      inProgress: 1,
+      noAttachment: 1,
+    });
+  });
 });
 
 describe('buildBatchQueue', () => {
@@ -116,5 +149,17 @@ describe('buildBatchQueue', () => {
 
     const q = await buildBatchQueue(plugin);
     expect(q[0].status).toBe('in_progress');
+  });
+
+  test('converted entries are not re-queued when the attachment cannot be resolved', async () => {
+    const plugin = makePlugin([{ id: 'a' }, { id: 'b' }]);
+    mockedGet.mockResolvedValue(null);
+    writeConvertedMd('a');
+
+    const q = await buildBatchQueue(plugin);
+    const byId = Object.fromEntries(q.map((i) => [i.entry.id, i.status]));
+    expect(byId['a']).toBe('converted');
+    expect(byId['b']).toBe('no_attachment');
+    expect(q.filter((i) => i.status === 'pending')).toHaveLength(0);
   });
 });

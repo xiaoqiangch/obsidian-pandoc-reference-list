@@ -953,6 +953,16 @@ body {
     word-break: break-all;
 }
 
+.pwc-rag-file-heading {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+.pwc-rag-file-heading::before {
+    content: " · ";
+    color: var(--text-faint);
+}
+
 .pwc-rag-file-count {
     flex: 0 0 auto;
     font-size: var(--font-ui-smaller);

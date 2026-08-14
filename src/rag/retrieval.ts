@@ -24,6 +24,86 @@ export interface RagPosition {
 }
 
 /**
+ * Display name for a search hit: the markdown file's own name.
+ *
+ * The indexer stores a `title` sniffed from the first meaningful line of the
+ * document (see extractTitle in bm25.ts). For converted literature that line is
+ * whatever MinerU happened to emit first — an empty `#` heading, an inline
+ * `![](images/....jpg)`, a stray running head, a table row, or a fragment like
+ * "元数据" / "感知力" — so the result list showed confusing body text instead of
+ * identifying the paper. The file name is derived from the citekey and is both
+ * stable and meaningful, so it is what the list shows.
+ */
+export function ragDisplayName(docPath: string): string {
+  const base = (docPath || '').split(/[\\/]/).pop() || docPath || '';
+  return base.replace(/\.md$/i, '') || docPath || '';
+}
+
+/**
+ * First real ATX heading (`#`..`######`) of a markdown document, shown after the
+ * file name as a secondary label so a hit is identifiable at a glance.
+ *
+ * Deliberately stricter than extractTitle():
+ *  - only actual headings count, never arbitrary body text;
+ *  - YAML frontmatter is skipped so a `#` inside it is not picked up;
+ *  - fenced code blocks are skipped so a shell comment (`# rm -rf`) or a
+ *    Python comment is never mistaken for a heading;
+ *  - empty headings (MinerU emits a bare `#` on many converted PDFs) and
+ *    headings that are only an inline image are ignored, and the search
+ *    continues to the next candidate;
+ *  - inline images / links are reduced to their text so the label stays short.
+ *
+ * Returns '' when the document has no usable heading, in which case the caller
+ * shows the file name alone.
+ */
+export function firstMarkdownHeading(content: string, maxLen = 120): string {
+  if (!content) return '';
+  const lines = content.split('\n');
+  let i = 0;
+
+  while (i < lines.length && !lines[i].trim()) i++;
+
+  // Skip a YAML frontmatter block.
+  if (i < lines.length && /^-{3,}\s*$/.test(lines[i].trim())) {
+    let j = i + 1;
+    while (j < lines.length && !/^-{3,}\s*$/.test(lines[j].trim())) j++;
+    if (j < lines.length) i = j + 1;
+  }
+
+  let inFence = false;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (/^(```|~~~)/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const m = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+    if (!m) continue;
+
+    const text = cleanHeadingText(m[2]);
+    if (!text) continue;
+    return text.length > maxLen ? `${text.slice(0, maxLen)}…` : text;
+  }
+
+  return '';
+}
+
+/** Strip inline markdown decoration from a heading so it reads as plain text. */
+function cleanHeadingText(raw: string): string {
+  return raw
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '') // inline images carry no text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // links -> their label
+    .replace(/[*_`~]/g, '')
+    .replace(/#+\s*$/, '') // trailing closing hashes
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Produce a short highlightable snippet around the first line that matches any
  * query term. The view is responsible for actually highlighting the terms.
  */

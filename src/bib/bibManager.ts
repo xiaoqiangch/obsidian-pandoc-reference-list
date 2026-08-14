@@ -530,8 +530,16 @@ export class BibManager {
 
     this.plugin.saveSettings();
 
-    // Merge into existing cache (bib files may already be loaded)
+    // Merge into existing cache (bib files may already be loaded). The Zotero
+    // library export (Better CSL JSON) carries richer metadata but no `file`
+    // field, so it must not clobber the absolute attachment path already
+    // parsed from the bib entry — otherwise every such entry is later counted
+    // as "no attachment" by the batch-conversion stats.
     for (const entry of bib) {
+      const existing = this.bibCache.get(entry.id);
+      if (existing?.file && !entry.file) {
+        entry.file = existing.file;
+      }
       this.bibCache.set(entry.id, entry);
       if (!entry.addDate) {
         const group = settings.zoteroGroups.find(g => g.id === entry.groupID);

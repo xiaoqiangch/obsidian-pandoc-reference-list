@@ -41,6 +41,55 @@ const MINERU_MODEL_VERSION = 'vlm';
 const LOCAL_MINERU_PATH = 'mineru';
 const LOCAL_MINERU_DEVICE = 'mps';
 
+/**
+ * Well-known locations of a `mineru` CLI that is installed but not on the PATH
+ * Obsidian inherits. MinerU is normally installed into a dedicated venv (the
+ * upstream install instructions use `uv`/`venv`), so the executable lives in
+ * that venv's bin dir and is only visible after the venv is activated — which
+ * a GUI app never does. Relying on bare `spawn('mineru')` therefore failed with
+ * ENOENT on a machine where mineru works fine in the terminal.
+ */
+const LOCAL_MINERU_CANDIDATES = [
+  '~/mineru/.venv/bin/mineru',
+  '~/.venv/bin/mineru',
+  '~/.local/bin/mineru',
+  '/opt/homebrew/bin/mineru',
+  '/usr/local/bin/mineru',
+];
+
+/**
+ * Resolve an executable `mineru` path, preferring PATH lookup and falling back
+ * to the known venv locations. Returns the bare command when nothing is found
+ * so the resulting error message still mentions `mineru`.
+ */
+export function resolveLocalMineruPath(
+  candidates: string[] = LOCAL_MINERU_CANDIDATES,
+  pathEnv: string = process.env.PATH || ''
+): string {
+  const isExecutable = (p: string): boolean => {
+    try {
+      return fs.existsSync(p) && fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+
+  // 1) Normal PATH lookup: honours a system-wide / already-activated install.
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, LOCAL_MINERU_PATH);
+    if (isExecutable(candidate)) return candidate;
+  }
+
+  // 2) Known venv / user-local install locations.
+  for (const candidate of candidates) {
+    const expanded = expandHome(candidate);
+    if (isExecutable(expanded)) return expanded;
+  }
+
+  return LOCAL_MINERU_PATH;
+}
+
 type MineruProgressFn = (current: number, total: number, message?: string) => void;
 
 interface MineruTaskOptions {
@@ -190,7 +239,7 @@ export async function convertPdfWithMineruAuto(
     pdfPath,
     imagesDir,
     imageRelativePrefix,
-    LOCAL_MINERU_PATH,
+    resolveLocalMineruPath(),
     LOCAL_MINERU_DEVICE,
     onProgress
   );
@@ -335,6 +384,17 @@ function runLocalMineru(mineruPath: string, pdfPath: string, outRoot: string, de
     });
     child.on('error', (e: any) => {
       clearTimeout(timer);
+      if (e?.code === 'ENOENT') {
+        reject(
+          new Error(
+            `找不到本地 MinerU 可执行文件（已尝试：${mineruPath}）。` +
+              `MinerU 通常安装在独立虚拟环境中（如 ~/mineru/.venv/bin/mineru），` +
+              `Obsidian 继承的 PATH 看不到它。请将 mineru 软链到 PATH 目录，例如：` +
+              `ln -s ~/mineru/.venv/bin/mineru /opt/homebrew/bin/mineru`
+          )
+        );
+        return;
+      }
       reject(new Error(`本地 MinerU 进程错误: ${e.message}`));
     });
     child.on('close', (code: number) => {

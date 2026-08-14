@@ -95,4 +95,58 @@ export class ConversionStateManager {
   getAll(): ConversionState[] {
     return Object.values(this.stateMap);
   }
+
+  /**
+   * Repair state left behind by a process that died mid-conversion.
+   *
+   * `in_progress` only ever means "a conversion is running *in this process*".
+   * Nothing clears it when Obsidian quits, reloads the plugin, or the
+   * conversion throws in a way that skips the catch block, so the flag leaks
+   * and survives forever in the on-disk state file. Those leaked entries then
+   * show up as 进行中 in the batch stats and — worse — are skipped by
+   * buildBatchQueue, so the paper can never be converted again without a
+   * manual force-reconvert.
+   *
+   * Called once at startup, before any conversion can begin, so every
+   * `in_progress` entry it sees is by definition stale:
+   *  - output md already on disk → the conversion actually finished
+   *    (or finished enough to be usable) → mark `completed`;
+   *  - no output → mark `failed` so it is picked up as pending again.
+   *
+   * Returns how many entries were repaired in each direction.
+   */
+  reconcileStaleInProgress(
+    hasOutput: (state: ConversionState) => boolean
+  ): { completed: number; failed: number } {
+    let completed = 0;
+    let failed = 0;
+
+    for (const [citekey, state] of Object.entries(this.stateMap)) {
+      if (state.status !== 'in_progress') continue;
+      if (hasOutput(state)) {
+        this.stateMap[citekey] = {
+          ...state,
+          status: 'completed',
+          completedAt: state.completedAt || new Date().toISOString(),
+        };
+        completed++;
+      } else {
+        this.stateMap[citekey] = {
+          ...state,
+          status: 'failed',
+          error: state.error || '转换被中断（插件重载或 Obsidian 退出），状态已重置',
+        };
+        failed++;
+      }
+    }
+
+    if (completed || failed) {
+      this.save();
+      debugLog('ConverterState', 'Reconciled stale in_progress entries', {
+        completed,
+        failed,
+      });
+    }
+    return { completed, failed };
+  }
 }

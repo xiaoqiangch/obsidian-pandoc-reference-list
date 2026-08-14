@@ -1,3 +1,4 @@
+import { Notice } from 'obsidian';
 import { getVaultRoot, debugLog } from '../helpers';
 import { ConversionStateManager, ConversionState } from './conversionState';
 import { getPdfPageCount } from './pdfRenderer';
@@ -361,6 +362,30 @@ export function isConversionCompleted(citekey: string): boolean {
 
 export function isConversionInProgress(citekey: string): boolean {
   return new ConversionStateManager().isInProgress(citekey);
+}
+
+/**
+ * Repair `in_progress` state left over from a previous session.
+ *
+ * Must run at startup, before any conversion begins: at that moment no
+ * conversion can legitimately be in progress, so anything still flagged
+ * `in_progress` is a leak from a plugin reload / Obsidian quit / hard crash.
+ * Without this the entry is reported as 进行中 forever and, because
+ * buildBatchQueue skips in-progress items, it can never be re-converted.
+ */
+export function reconcileStaleConversions(): { completed: number; failed: number } {
+  const stateManager = new ConversionStateManager();
+  return stateManager.reconcileStaleInProgress((state) => {
+    try {
+      return (
+        !!state.outputMdPath &&
+        fs.existsSync(state.outputMdPath) &&
+        fs.statSync(state.outputMdPath).size > 0
+      );
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function forceReconvert(citekey: string, outputPath: string): void {

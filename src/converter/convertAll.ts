@@ -76,6 +76,33 @@ export function getBatchProgress(): BatchProgress {
 }
 
 /**
+ * Make Zotero attachment links available before classification. The plugin
+ * fills zCitekeyToAttachmentLinks lazily (only for citekeys rendered in the
+ * reference pane), so stats run straight after startup would otherwise see an
+ * empty map and report entries with Zotero-stored PDFs as "no attachment".
+ * Entries that already have a resolvable local bib `file` path are skipped.
+ */
+async function ensureZoteroLinks(plugin: any, entries: PartialCSLEntry[]): Promise<void> {
+  const bibManager = plugin.bibManager;
+  if (!plugin.settings?.pullFromZotero || !bibManager?.getZLinksForKeys) return;
+
+  const need: string[] = [];
+  for (const entry of entries) {
+    if (isConvertedOnDisk(plugin, entry.id)) continue;
+    const local = bibManager.parseBibFileField(entry.file);
+    if (!local.some((p: string) => fs.existsSync(p))) {
+      need.push(entry.id);
+    }
+  }
+  if (need.length === 0) return;
+  try {
+    await bibManager.getZLinksForKeys(new Set(need));
+  } catch (e: any) {
+    debugLog('ConvertAll', 'Zotero attachment lookup failed', { error: e.message });
+  }
+}
+
+/**
  * Enumerate every entry in the loaded bibliography and classify its
  * attachment conversion state. Uses the same attachment resolution as the
  * in-app "转换MD" button (getAttachmentPath), so counts match what the user
@@ -95,15 +122,28 @@ export async function collectAttachmentStats(plugin: any): Promise<AttachmentSta
   if (!bibCache) return stat;
   stat.total = bibCache.size;
 
+  // Fetch Zotero attachment links for entries with no local bib `file` first,
+  // so Zotero-stored PDFs/EPUBs are not misclassified as "无附件".
+  await ensureZoteroLinks(plugin, Array.from(bibCache.values()));
+
   for (const entry of bibCache.values()) {
+    // Conversion state is decided by the output md, *before* attachment
+    // resolution. An already-converted paper must keep counting as converted
+    // even when its source attachment can no longer be resolved (the PDF was
+    // moved/renamed, or the links live in Zotero and Zotero is not running so
+    // zCitekeyToAttachmentLinks is empty). Resolving first made hundreds of
+    // finished conversions show up under "无附件" and pushed "已转换" far below
+    // the number of md files actually on disk.
+    if (isConvertedOnDisk(plugin, entry.id)) {
+      stat.converted++;
+      continue;
+    }
     const attachment = await getAttachmentPath(entry, plugin);
     if (!attachment) {
       stat.noAttachment++;
       continue;
     }
-    if (isConvertedOnDisk(plugin, entry.id)) {
-      stat.converted++;
-    } else if (isConversionInProgress(entry.id)) {
+    if (isConversionInProgress(entry.id)) {
       stat.inProgress++;
     } else {
       stat.pending++;
@@ -121,14 +161,19 @@ export async function buildBatchQueue(plugin: any): Promise<BatchItem[]> {
   const items: BatchItem[] = [];
   if (!bibCache) return items;
 
+  await ensureZoteroLinks(plugin, Array.from(bibCache.values()));
+
   for (const entry of bibCache.values()) {
+    // Same ordering rationale as collectAttachmentStats: an existing output md
+    // means "converted" regardless of whether the attachment still resolves,
+    // so a finished paper is never re-queued just because Zotero is offline.
+    if (isConvertedOnDisk(plugin, entry.id)) {
+      items.push({ entry, attachment: '', status: 'converted' });
+      continue;
+    }
     const attachment = await getAttachmentPath(entry, plugin);
     if (!attachment) {
       items.push({ entry, attachment: '', status: 'no_attachment' });
-      continue;
-    }
-    if (isConvertedOnDisk(plugin, entry.id)) {
-      items.push({ entry, attachment, status: 'converted' });
       continue;
     }
     if (isConversionInProgress(entry.id)) {

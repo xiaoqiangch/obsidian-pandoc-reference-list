@@ -6,7 +6,7 @@ import ReferenceList from './main';
 import { callDeepSeek } from './bib/aiHelper';
 import { PartialCSLEntry } from './bib/types';
 import { convertToMarkdown, getOutputMdPath, isConversionCompleted, isConversionInProgress, forceReconvert, ConvertProgress } from './converter';
-import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, RagPosition } from './rag/retrieval';
+import { findRagPositions, findLayoutBlocksByLines, readLiteratureLayout, ragDisplayName, firstMarkdownHeading, RagPosition } from './rag/retrieval';
 import { rerankTexts, RERANK_OVERRIDE, resolveRerankSettings } from './rag/rerank';
 import { parseQuery } from './rag/tokenizer';
 import { LayoutBlock } from './rag/layout';
@@ -79,6 +79,10 @@ export class ReferenceListView extends ItemView {
   private renderSeq = 0;
   private _pendingListState: ListState | null = null;
   private _skipStateCapture = false;
+
+  /** path -> first markdown heading, filled in as documents are read for search
+   *  results so the result header can show it without re-reading files. */
+  private headingCache = new Map<string, string>();
 
   private debouncedRender = debounce(() => {
     this.displayedCount = 50;
@@ -644,7 +648,20 @@ export class ReferenceListView extends ItemView {
     const summary = details.createEl('summary', { cls: 'pwc-rag-file-header' });
     const icon = summary.createDiv({ cls: 'pwc-rag-file-icon' });
     setIcon(icon, 'chevron-down');
-    summary.createDiv({ cls: 'pwc-rag-file-name', text: doc.title });
+    // Always identify the hit by its file name. doc.title is sniffed from the
+    // document body by the indexer and is frequently meaningless for converted
+    // literature (empty heading, leading image, "元数据", a running head, ...).
+    const nameEl = summary.createDiv({ cls: 'pwc-rag-file-name' });
+    nameEl.createSpan({
+      cls: 'pwc-rag-file-basename',
+      text: ragDisplayName(doc.path) || doc.title,
+    });
+    // Secondary label: the document's own first heading, which names the actual
+    // paper/chapter where the file name is only a citekey.
+    const heading = this.headingCache.get(doc.path);
+    if (heading) {
+      nameEl.createSpan({ cls: 'pwc-rag-file-heading', text: heading });
+    }
     const count = summary.createDiv({ cls: 'pwc-rag-file-count', text: String(entries.length) });
     count.setAttr('aria-label', `${entries.length} 处命中`);
 
@@ -1261,7 +1278,14 @@ export class ReferenceListView extends ItemView {
   private async readVaultText(relPath: string): Promise<string> {
     const file = this.plugin.app.vault.getAbstractFileByPath(relPath);
     if (!(file instanceof TFile)) return '';
-    return await this.plugin.app.vault.cachedRead(file);
+    const content = await this.plugin.app.vault.cachedRead(file);
+    // Every search-result group reads its documents through here, so this is
+    // the one place that can cache the document's first heading for the result
+    // header without adding extra file reads.
+    if (!this.headingCache.has(relPath)) {
+      this.headingCache.set(relPath, firstMarkdownHeading(content));
+    }
+    return content;
   }
 
   locateLiteraturePdf(citekey: string, layoutHit: { page: number; bbox: number[] | null }) {

@@ -848,18 +848,25 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       .setDesc('统计当前文献库中所有 PDF/EPUB 附件的转换状态。统计完成后可一键批量转换。');
 
     let batchStats: AttachmentStat | null = null;
+    let batchStatsLoading = false;
 
-    const renderBatchStats = async () => {
-      try {
-        batchStats = await collectAttachmentStats(this.plugin);
-      } catch (e: any) {
-        debugLog('Settings', 'collectAttachmentStats failed', { error: e.message });
-        batchStats = null;
-      }
+    /**
+     * Repaint the description from the last collected stats. Kept separate from
+     * collection so the 500ms progress ticker can refresh the batch progress
+     * bar without re-running the (whole-library, fs-touching) stats scan, and
+     * so "刷新统计" can show a "统计中..." state and thus visibly acknowledge
+     * the click even when the resulting numbers are unchanged.
+     */
+    const paintBatchStats = () => {
       batchSetting.descEl.empty();
       const b = getBatchProgress();
       const st = batchStats;
-      if (st) {
+      if (batchStatsLoading) {
+        batchSetting.descEl.createDiv({
+          cls: 'pwc-semantic-status-hint',
+          text: '统计中...',
+        });
+      } else if (st) {
         batchSetting.descEl.createDiv({
           cls: 'pwc-semantic-status-hint',
           text: `共 ${st.total} 条文献：已转换 ${st.converted}，待转换 ${st.pending}，进行中 ${st.inProgress}，无附件 ${st.noAttachment}。`,
@@ -892,9 +899,33 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       }
     };
 
+    const renderBatchStats = async () => {
+      batchStatsLoading = true;
+      paintBatchStats();
+      try {
+        batchStats = await collectAttachmentStats(this.plugin);
+      } catch (e: any) {
+        debugLog('Settings', 'collectAttachmentStats failed', { error: e.message });
+        batchStats = null;
+      }
+      batchStatsLoading = false;
+      paintBatchStats();
+    };
+
     batchSetting.addButton((button) =>
       button.setButtonText('刷新统计').onClick(async () => {
-        await renderBatchStats();
+        button.setDisabled(true);
+        try {
+          await renderBatchStats();
+          const st = batchStats;
+          new Notice(
+            st
+              ? `统计完成：已转换 ${st.converted}，待转换 ${st.pending}，进行中 ${st.inProgress}，无附件 ${st.noAttachment}（共 ${st.total}）。`
+              : '统计失败：请确认文献库已加载。'
+          );
+        } finally {
+          button.setDisabled(false);
+        }
       })
     );
 
@@ -933,7 +964,13 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     if (this.batchStatusTimer !== null) {
       window.clearInterval(this.batchStatusTimer);
     }
-    this.batchStatusTimer = window.setInterval(renderBatchStats, 500);
+    // The ticker only repaints (cheap). Re-collecting stats every 500ms meant a
+    // full-library scan with an fs.existsSync per entry twice a second, and it
+    // also made the "刷新统计" button look broken: the panel was already being
+    // rewritten constantly, so a click produced no visible change.
+    this.batchStatusTimer = window.setInterval(() => {
+      if (getBatchProgress().running) paintBatchStats();
+    }, 500);
 
     new Setting(containerEl).setName('交叉编码重排序（Rerank）').setHeading();
 

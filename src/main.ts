@@ -35,6 +35,7 @@ import { isZoteroRunning } from './bib/helpers';
 import { RagIndexer } from './rag/indexer';
 import { SemanticIndexer, IndexProgress } from './rag/semanticIndexer';
 import { backfillLiteratureLayouts } from './rag/backfill';
+import { reconcileStaleConversions } from './converter';
 import * as fs from 'fs';
 
 export default class ReferenceList extends Plugin {
@@ -161,6 +162,18 @@ export default class ReferenceList extends Plugin {
 
       this.app.workspace.trigger('parse-style-settings');
     });
+
+    // Repair conversion state leaked by a previous session (plugin reload /
+    // Obsidian quit mid-conversion). Runs before any conversion can start, so
+    // anything still marked in_progress is stale by definition.
+    try {
+      const repaired = reconcileStaleConversions();
+      if (repaired.completed || repaired.failed) {
+        debugLog('Main', 'Reconciled stale conversion state', repaired);
+      }
+    } catch (e) {
+      debugLog('Main', 'Conversion state reconciliation failed', e);
+    }
 
     // RAG full-text index: build in the background, keep it incrementally updated.
     this.initRagIndex();
@@ -300,23 +313,17 @@ export default class ReferenceList extends Plugin {
       })
     );
 
+    const bibReinit = debounce(
+      () => {
+        this.bibManager.reinit(true).then(() => this.processReferences());
+      },
+      1000,
+      false
+    );
     this.registerEvent(
       app.vault.on('modify', (file) => {
-        if (
-          file instanceof TFile &&
-          (file.extension === 'bib' ||
-            file.extension === 'json' ||
-            file.extension === 'yaml')
-        ) {
-          // Ignore the plugin's own semantic-index cache (.bib-manager/): the
-          // indexer writes semantic-index.json there via direct fs, which the
-          // vault watcher reports as a modify event. Re-initing the whole
-          // bibliography on every index save churns CPU while the index is
-          // being (re)built.
-          if (file.path === '.bib-manager' || file.path.startsWith('.bib-manager/')) {
-            return;
-          }
-          this.bibManager.reinit(true).then(() => this.processReferences());
+        if (file instanceof TFile && this.isBibliographySource(file)) {
+          bibReinit();
         }
       })
     );
@@ -466,6 +473,48 @@ export default class ReferenceList extends Plugin {
     this.bibManager.destroy();
     this.ragIndexer.destroy();
     this.semanticIndexer.destroy();
+  }
+
+  /**
+   * True only for vault files that are an actually configured bibliography
+   * source, so a `modify` event should rebuild the bibliography.
+   *
+   * Matching on the bare extension (.bib/.json/.yaml) was far too broad: the
+   * vault also holds the plugin's own caches (`.pandoc/csl-cache-*.json`,
+   * `.pandoc/zotero-library-*.json`), `.bib-manager/semantic-index.json`,
+   * per-paper `literature/<citekey>/layout.json`, and Obsidian's own
+   * `.obsidian/*.json`. Any of those being written kicked off a full
+   * `reinit(true)` + `processReferences()`, which in 'all' mode blanks and
+   * re-renders the panel — the panel appeared to refresh itself at random
+   * (and repeatedly during a conversion, since conversion writes layout.json).
+   * Writing a CSL cache from inside that very reinit also made the loop
+   * self-sustaining.
+   */
+  private isBibliographySource(file: TFile): boolean {
+    const ext = file.extension;
+    if (ext !== 'bib' && ext !== 'json' && ext !== 'yaml') return false;
+
+    // Plugin- and app-owned paths are never bibliography input.
+    const p = file.path;
+    if (p === '.bib-manager' || p.startsWith('.bib-manager/')) return false;
+    if (p === '.pandoc' || p.startsWith('.pandoc/')) return false;
+    if (p.startsWith('.obsidian/')) return false;
+    if (p.endsWith('/layout.json')) return false;
+
+    const configured = [
+      this.settings.pathToBibliography,
+      ...(Array.isArray(this.settings.bibliographyPaths)
+        ? this.settings.bibliographyPaths
+        : []),
+    ].filter((s): s is string => !!s);
+    if (configured.length === 0) return false;
+
+    // Configured paths may be absolute or vault-relative; compare both ways.
+    const abs = path.join(getVaultRoot(), p);
+    return configured.some((c) => {
+      const norm = path.normalize(c);
+      return norm === p || norm === abs || path.resolve(norm) === abs;
+    });
   }
 
   async initRagIndex(): Promise<void> {
@@ -824,6 +873,13 @@ export default class ReferenceList extends Plugin {
 
     if (view && view.mode === 'all') {
       if (view.showAddSection) {
+        return;
+      }
+      // Never blow away an active search: the panel then shows search results
+      // (full-text / semantic / rerank hits), which do not depend on the active
+      // note at all. Re-rendering here made results visibly flash and reset
+      // scroll position while the user was reading them.
+      if (view.searchQuery && view.searchQuery.trim()) {
         return;
       }
       if (typeof view.setViewContent === 'function') {
