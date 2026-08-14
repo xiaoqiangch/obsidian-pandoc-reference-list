@@ -1215,6 +1215,7 @@ export class ReferenceListView extends ItemView {
                     : isInProgress
                     ? t('Conversion in progress')
                     : t('Convert to MD'),
+                  'data-citekey': id,
                 },
               }, (div) => {
                 setIcon(div, isCompleted ? 'refresh-cw' : isInProgress ? 'loader' : 'file-down');
@@ -1709,17 +1710,20 @@ export class ReferenceListView extends ItemView {
       status: 'in_progress',
       message: 'Starting...',
     });
-
-    this.renderAllReferencesList();
+    this.updateConvertButton(entry.id);
 
     try {
       await convertToMarkdown(entry, attachmentPath, convertSettings, (progress: ConvertProgress) => {
         this.conversionProgress.set(entry.id, progress);
-        this.renderAllReferencesList();
+        // Update only the entry's button in place. A full renderAllReferencesList()
+        // here re-runs the whole search pipeline (BM25 + semantic + the paid
+        // rerank API) on every page-progress tick, which made the search panel
+        // constantly flicker and re-invoke rerank while a conversion ran.
+        this.updateConvertButton(entry.id);
       });
 
       this.conversionProgress.delete(entry.id);
-      this.renderAllReferencesList();
+      this.updateConvertButton(entry.id);
     } catch (e: any) {
       console.error('Conversion error:', e);
       this.conversionProgress.set(entry.id, {
@@ -1729,7 +1733,54 @@ export class ReferenceListView extends ItemView {
         status: 'failed',
         message: e.message,
       });
-      this.renderAllReferencesList();
+      this.updateConvertButton(entry.id);
+    }
+  }
+
+  /**
+   * Update one entry's "转换MD" button in place (icon, label, progress bar)
+   * without re-rendering the whole list. Safe to call when the view has been
+   * closed (contentEl detached): the query simply finds nothing and no-ops, so
+   * an in-flight conversion is never aborted by closing the pane.
+   */
+  private updateConvertButton(id: string) {
+    try {
+      const btn = this.contentEl.querySelector<HTMLElement>(
+        `.pwc-convert-btn[data-citekey="${id}"]`
+      );
+      if (!btn || !this.contentEl.isConnected) return;
+
+      const progress = this.conversionProgress.get(id);
+      const isInProgress = progress?.status === 'in_progress';
+      const isCompleted = isConversionCompleted(id);
+
+      btn.setAttr(
+        'aria-label',
+        isCompleted
+          ? t('Force re-convert')
+          : isInProgress
+          ? t('Conversion in progress')
+          : t('Convert to MD')
+      );
+      btn.toggleClass('is-active', isCompleted);
+
+      const oldIcon = btn.querySelector('svg');
+      if (oldIcon) oldIcon.remove();
+      setIcon(btn, isCompleted ? 'refresh-cw' : isInProgress ? 'loader' : 'file-down');
+
+      btn.querySelector('.pwc-conversion-progress')?.remove();
+      if (isInProgress && progress && progress.totalPages > 0) {
+        const pct = Math.round((progress.currentPage / progress.totalPages) * 100);
+        const progressDiv = btn.createDiv({ cls: 'pwc-conversion-progress' });
+        const progressBar = progressDiv.createDiv({ cls: 'pwc-conversion-progress-bar' });
+        progressBar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' }).style.width = `${pct}%`;
+        progressDiv.createDiv({
+          cls: 'pwc-conversion-progress-text',
+          text: `${progress.currentPage}/${progress.totalPages}`,
+        });
+      }
+    } catch {
+      // The view may be gone / mid-teardown; conversion must keep running.
     }
   }
 
