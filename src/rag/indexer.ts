@@ -8,7 +8,11 @@ const path = require('path');
 const EXCLUDE_DIR_RE = /(^|\/)(\.trash|\.obsidian|\.git|\.openclaw|_bib-links)(\/|$)/;
 /** Folder names excluded from indexing by default (user-configurable). */
 export const DEFAULT_EXCLUDE_FOLDERS = ['node_modules', '.yarn', 'bower_components'];
-const CACHE_VERSION = 2;
+// v3 splits the cache into a small metadata file (rag-index.json, loaded at
+// startup) and a large search payload (rag-postings.json, loaded lazily on the
+// first search / first index mutation). v2 was a single ~300MB JSON whose
+// synchronous parse froze startup for seconds.
+const CACHE_VERSION = 3;
 const IDLE_BATCH = 40;
 // iCloud / APFS on-demand materialization can briefly shift a file's mtime
 // without the content changing; a small tolerance avoids spurious re-indexes.
@@ -132,16 +136,24 @@ export class RagIndexer {
   private app: App;
   private outputPath: string;
   private cachePath: string;
+  private searchPath: string;
   private opts: IndexerOptions;
   private busy = false;
   private cacheDirty = false;
   private saveTimer: any = null;
+  /** Set once the large search payload (postings + cjkText) has been loaded. */
+  private searchLoaded = false;
+  private searchLoadPromise: Promise<void> | null = null;
+  /** Set once the metadata cache has been read (successfully or not). */
+  private cacheLoaded = false;
 
   constructor(app: App, outputPath: string, opts: IndexerOptions) {
     this.app = app;
     this.outputPath = outputPath;
     this.opts = opts;
-    this.cachePath = path.join(getCacheRoot(), 'rag-index.json');
+    const root = getCacheRoot();
+    this.cachePath = path.join(root, 'rag-index.json');
+    this.searchPath = path.join(root, 'rag-postings.json');
   }
 
   /** Apply indexing-option changes without recreating the indexer. */
@@ -157,21 +169,71 @@ export class RagIndexer {
     return shouldIndexPath(relPath, undefined, this.opts);
   }
 
+  /**
+   * Load the metadata cache (fast, small file). Postings / cjkText are left
+   * for {@link ensureSearchReady}, so startup never blocks on the multi-hundred-MB
+   * parse. A legacy single-file cache (version 2) is loaded fully and
+   * immediately re-saved in the split layout.
+   */
   async loadCache(): Promise<boolean> {
     try {
-      if (!fs.existsSync(this.cachePath)) return false;
-      const raw = JSON.parse(fs.readFileSync(this.cachePath, 'utf-8'));
-      if (!raw || raw.version !== CACHE_VERSION) return false;
-      this.index.load(raw.index);
-      debugLog('RagIndexer', 'Cache loaded', {
+      if (!fs.existsSync(this.cachePath)) {
+        this.cacheLoaded = true;
+        return false;
+      }
+      const raw = JSON.parse(await fs.promises.readFile(this.cachePath, 'utf-8'));
+
+      if (raw.version === 2) {
+        // Legacy single-file cache: load everything, then migrate to split files.
+        if (!raw.index) return false;
+        this.index.load(raw.index);
+        this.searchLoaded = true;
+        this.scheduleSave();
+        this.cacheLoaded = true;
+        return true;
+      }
+      if (raw.version !== CACHE_VERSION) {
+        this.cacheLoaded = true;
+        return false;
+      }
+
+      this.index.loadMeta(raw.index);
+      this.searchLoaded = false;
+      this.cacheLoaded = true;
+      debugLog('RagIndexer', 'Meta cache loaded', {
         docs: this.index.docCount,
-        postings: raw.index?.postings ? Object.keys(raw.index.postings).length : 0,
       });
       return true;
     } catch (e) {
       debugLog('RagIndexer', 'Failed to load cache', { error: e });
+      this.cacheLoaded = true;
       return false;
     }
+  }
+
+  /**
+   * Load the large search payload (postings + cjkText) exactly once. Called
+   * lazily from search() and incrementalUpdate(); the first call reads and
+   * parses the multi-hundred-MB file, subsequent calls are no-ops.
+   */
+  ensureSearchReady(): Promise<void> {
+    if (this.searchLoaded) return Promise.resolve();
+    if (this.searchLoadPromise) return this.searchLoadPromise;
+    this.searchLoadPromise = (async () => {
+      try {
+        if (fs.existsSync(this.searchPath)) {
+          const raw = JSON.parse(await fs.promises.readFile(this.searchPath, 'utf-8'));
+          if (raw?.version === CACHE_VERSION) {
+            this.index.loadSearch(raw.index);
+          }
+        }
+        this.searchLoaded = true;
+      } catch (e) {
+        debugLog('RagIndexer', 'Failed to load search payload', { error: e });
+        this.searchLoaded = true;
+      }
+    })();
+    return this.searchLoadPromise;
   }
 
   scheduleSave(): void {
@@ -190,8 +252,14 @@ export class RagIndexer {
     try {
       const dir = path.dirname(this.cachePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const payload = { version: CACHE_VERSION, index: this.index.serialize() };
-      fs.writeFileSync(this.cachePath, JSON.stringify(payload), 'utf-8');
+      const meta = { version: CACHE_VERSION, index: this.index.serializeMeta() };
+      fs.writeFileSync(this.cachePath, JSON.stringify(meta), 'utf-8');
+      const search = {
+        version: CACHE_VERSION,
+        index: this.index.serializeSearch(),
+      };
+      fs.writeFileSync(this.searchPath, JSON.stringify(search), 'utf-8');
+      this.searchLoaded = true;
       debugLog('RagIndexer', 'Cache saved', { docs: this.index.docCount });
     } catch (e) {
       debugLog('RagIndexer', 'Failed to save cache', { error: e });
@@ -205,6 +273,10 @@ export class RagIndexer {
     try {
       const files = this.app.vault.getMarkdownFiles().filter((f) => this.shouldIndex(f.path));
       this.index = new Bm25Index();
+      // The fresh in-memory index already holds full postings; never let
+      // ensureSearchReady() or loadCache() overwrite it from a stale on-disk copy.
+      this.searchLoaded = true;
+      this.cacheLoaded = true;
 
       for (let i = 0; i < files.length; i++) {
         if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
@@ -225,6 +297,13 @@ export class RagIndexer {
     if (this.busy) return;
     this.busy = true;
     try {
+      // Load the metadata cache first when this is the first mutation since
+      // startup (e.g. a file event fired before initRagIndex ran): with an
+      // empty index every file would look "changed" and trigger a full rebuild.
+      if (!this.cacheLoaded) {
+        await this.loadCache();
+      }
+
       const files = this.app.vault
         .getMarkdownFiles()
         .filter((f) => this.shouldIndex(f.path));
@@ -233,10 +312,9 @@ export class RagIndexer {
       for (const f of files) current.set(f.path, { mtime: f.stat.mtime, size: f.stat.size });
 
       // Removed files
+      const removedPaths: string[] = [];
       for (const docPath of Array.from(this.index.docIdByPath.keys())) {
-        if (!current.has(docPath)) {
-          this.index.removeDoc(docPath);
-        }
+        if (!current.has(docPath)) removedPaths.push(docPath);
       }
 
       // Added / changed files
@@ -251,6 +329,22 @@ export class RagIndexer {
         if (meta && docChanged(meta, f.stat)) {
           changed.push(f);
         }
+      }
+
+      // Diffing needs only the small metadata cache. Postings + cjkText (a
+      // multi-hundred-MB parse) are loaded lazily below — and not at all when
+      // nothing changed, so a routine startup run stays in the tens of ms.
+      if (removedPaths.length === 0 && changed.length === 0) {
+        debugLog('RagIndexer', 'Incremental update: nothing changed (no search payload load)');
+        return;
+      }
+
+      // Mutations (addDoc/removeDoc) update the postings in place, so the
+      // search payload must be loaded before any diff is applied.
+      await this.ensureSearchReady();
+
+      for (const docPath of removedPaths) {
+        this.index.removeDoc(docPath);
       }
 
       for (let i = 0; i < changed.length; i++) {
@@ -289,7 +383,8 @@ export class RagIndexer {
     }
   }
 
-  search(query: string, topK: number, minTermCoverage?: number) {
+  async search(query: string, topK: number, minTermCoverage?: number) {
+    await this.ensureSearchReady();
     return this.index.search(query, topK, minTermCoverage);
   }
 

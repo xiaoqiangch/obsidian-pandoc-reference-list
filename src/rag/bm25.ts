@@ -249,6 +249,76 @@ export class Bm25Index {
     return { version: 1, documents, postings, totalTokens: this.totalTokens };
   }
 
+  /**
+   * Small per-document metadata payload (no postings / cjkText). Loaded at
+   * startup so incremental diffs can run without reading the large postings
+   * file. cjkText is stripped here — it is only needed at search time and is
+   * restored by {@link loadSearch}.
+   */
+  serializeMeta(): { docs: RagDocMeta[]; totalTokens: number } {
+    const docs = Array.from(this.documents.values())
+      .sort((a, b) => a.id - b.id)
+      .map((d) => {
+        const { cjkText: _cjkText, ...rest } = d;
+        return rest;
+      });
+    return { docs, totalTokens: this.totalTokens };
+  }
+
+  /** Large search-time payload: inverted index + per-doc CJK phrase text. */
+  serializeSearch(): { postings: Record<string, number[]>; cjkText: Record<number, string> } {
+    const postings: Record<string, number[]> = {};
+    for (const [t, arr] of this.postings) postings[t] = arr;
+    const cjkText: Record<number, string> = {};
+    for (const [id, doc] of this.documents) {
+      if (doc.cjkText) cjkText[id] = doc.cjkText;
+    }
+    return { postings, cjkText };
+  }
+
+  /** Load only the small metadata payload (see {@link serializeMeta}). */
+  loadMeta(data: { docs?: RagDocMeta[]; totalTokens?: number }): void {
+    this.documents.clear();
+    this.postings.clear();
+    this.docIdByPath.clear();
+    this.docTerms.clear();
+    this.totalTokens = data?.totalTokens || 0;
+    this.nextId = 1;
+    for (const doc of data?.docs || []) {
+      this.documents.set(doc.id, doc);
+      this.docIdByPath.set(doc.path, doc.id);
+      if (doc.id >= this.nextId) this.nextId = doc.id + 1;
+    }
+  }
+
+  /** Load the large search-time payload (postings + cjkText) into a
+   *  metadata-only index. Safe to call after {@link loadMeta}. */
+  loadSearch(data: { postings?: Record<string, number[]>; cjkText?: Record<number, string> }): void {
+    this.postings.clear();
+    this.docTerms.clear();
+    for (const [t, arr] of Object.entries(data?.postings || {})) {
+      this.postings.set(t, arr);
+      for (let i = 0; i < arr.length; i += 2) {
+        const docId = arr[i];
+        let list = this.docTerms.get(docId);
+        if (!list) {
+          list = [];
+          this.docTerms.set(docId, list);
+        }
+        list.push(t);
+      }
+    }
+    for (const [id, text] of Object.entries(data?.cjkText || {})) {
+      const doc = this.documents.get(Number(id));
+      if (doc) doc.cjkText = text;
+    }
+  }
+
+  /** True once the search payload (postings + cjkText) is loaded. */
+  get searchReady(): boolean {
+    return this.postings.size > 0 || this.documents.size === 0;
+  }
+
   load(data: Bm25Serialized): void {
     this.documents.clear();
     this.postings.clear();

@@ -347,7 +347,7 @@ export class ReferenceListView extends ItemView {
     const rag = this.plugin.ragIndexer;
     if (rag.index.docCount === 0) return;
 
-    const hits = rag.search(query, 60, this.plugin.settings.ragMinTermCoverage ?? 1);
+    const hits = await rag.search(query, 60, this.plugin.settings.ragMinTermCoverage ?? 1);
 
     const group = container.createDiv({ cls: 'pwc-rag-group' });
     group.setAttr('data-rag-group', 'fulltext');
@@ -470,7 +470,7 @@ export class ReferenceListView extends ItemView {
     };
 
     // Full-text (BM25) candidates: best matching position per document.
-    const ftHits = rag.search(
+    const ftHits = await rag.search(
       query,
       candidateCount,
       settings.ragMinTermCoverage ?? 1

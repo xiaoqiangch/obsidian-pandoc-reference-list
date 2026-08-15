@@ -139,6 +139,43 @@ describe('Bm25Index', () => {
     expect(hits[0].doc.path).toBe('a.md');
   });
 
+  test('split meta/search payload round trip (startup fast-path + lazy postings)', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', 'digital economy growth', { mtime: 1, size: 100 });
+    idx.addDoc('b.md', '二十四桥明月夜', { mtime: 2, size: 200 });
+
+    // serializeMeta must NOT carry cjkText (that is what keeps it tiny).
+    const meta = idx.serializeMeta();
+    for (const d of meta.docs) expect((d as any).cjkText).toBeUndefined();
+
+    const idx2 = new Bm25Index();
+    idx2.loadMeta(meta);
+    // Diff works with meta only (docIdByPath / documents are populated).
+    expect(idx2.docCount).toBe(2);
+    expect(idx2.getDocId('a.md')).toBeDefined();
+
+    // Before the search payload is loaded, search yields nothing.
+    expect(idx2.search('economy', 10).length).toBe(0);
+
+    idx2.loadSearch(idx.serializeSearch());
+    expect(idx2.search('economy', 10)[0].doc.path).toBe('a.md');
+    const cjk = idx2.search('二十四桥', 10);
+    expect(cjk.length).toBe(1);
+    expect(cjk[0].doc.path).toBe('b.md');
+    expect((idx2 as any).searchReady).toBe(true);
+  });
+
+  test('addDoc after loadMeta keeps postings consistent only once search payload is loaded', () => {
+    const idx = new Bm25Index();
+    idx.addDoc('a.md', 'digital economy', {});
+    const idx2 = new Bm25Index();
+    idx2.loadMeta(idx.serializeMeta());
+    idx2.loadSearch(idx.serializeSearch());
+    idx2.addDoc('c.md', 'climate change', {});
+    expect(idx2.search('climate', 10)[0].doc.path).toBe('c.md');
+    expect(idx2.search('economy', 10)[0].doc.path).toBe('a.md');
+  });
+
   test('addDoc replaces an existing document', () => {
     const idx = new Bm25Index();
     idx.addDoc('a.md', 'digital economy', {});

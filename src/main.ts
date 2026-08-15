@@ -176,8 +176,20 @@ export default class ReferenceList extends Plugin {
     }
 
     // RAG full-text index: build in the background, keep it incrementally updated.
-    this.initRagIndex();
-    this.initSemanticIndex();
+    // Deferred until after Obsidian finishes its own startup: loading the index
+    // (hundreds of MB) synchronously at plugin load froze the whole app for
+    // seconds. Running it a moment later keeps startup instant.
+    const deferAfterStartup = (fn: () => void, delay = 3000) => {
+      window.setTimeout(() => {
+        try {
+          fn();
+        } catch (e) {
+          debugLog('Main', 'Deferred startup task failed', { error: (e as any)?.message });
+        }
+      }, delay);
+    };
+    deferAfterStartup(() => this.initRagIndex(), 2000);
+    deferAfterStartup(() => this.initSemanticIndex(), 4000);
 
     const ragUpdate = debounce(
       () => {
@@ -560,50 +572,50 @@ export default class ReferenceList extends Plugin {
       new Notice('语义检索：请先在设置中配置 Embedding API Key（本地 Ollama 服务可留空）。');
       return;
     }
-    // Probe whether this machine can embed (runs Ollama). On machines without
-    // the embedding service we only load the iCloud-synced index read-only —
-    // never build or overwrite it. Note: this is only a startup hint; every
-    // build/update re-probes inside the indexer, so a service that comes back
-    // online later is picked up automatically.
-    const available = await this.semanticIndexer.ensureEmbeddingAvailable();
-    debugLog('Main', 'Embedding service availability', { available });
+    // Probe whether this machine can embed (runs Ollama) and load the cache in
+    // parallel — the probe can take tens of seconds when Ollama is saturated,
+    // and the cache load reads a ~120MB vector file, so sequencing them made
+    // startup wait twice. On machines without the embedding service we only
+    // load the iCloud-synced index read-only — never build or overwrite it.
+    // Note: this is only a startup hint; every build/update re-probes inside
+    // the indexer, so a service that comes back online later is picked up
+    // automatically.
+    const [available] = await Promise.all([
+      this.semanticIndexer.ensureEmbeddingAvailable(),
+      this.semanticIndexer.loadCache(),
+    ]);
+    const loaded = this.semanticIndexer.index.docCount > 0;
+    debugLog('Main', 'Embedding service availability', { available, loaded });
 
-    try {
-      const loaded = await this.semanticIndexer.loadCache();
-      debugLog('Main', 'Semantic index cache loaded', { loaded });
-      if (!available) {
-        if (loaded) {
-          new Notice('语义检索：本机无嵌入服务，已加载 iCloud 同步的语义索引（只读，不会重建/覆盖）。');
-        } else {
-          new Notice('语义检索：本机无嵌入服务，且无可用同步索引，请在有嵌入服务的设备上构建后同步。');
-        }
-        return;
+    if (!available) {
+      if (loaded) {
+        new Notice('语义检索：本机无嵌入服务，已加载 iCloud 同步的语义索引（只读，不会重建/覆盖）。');
+      } else {
+        new Notice('语义检索：本机无嵌入服务，且无可用同步索引，请在有嵌入服务的设备上构建后同步。');
       }
-      if (!loaded) {
-        const pending = this.semanticIndexer.countPendingFiles();
+      return;
+    }
+    if (!loaded) {
+      const pending = this.semanticIndexer.countPendingFiles();
+      new Notice(
+        `语义索引未构建（共 ${pending} 个文件）：将在后台分批自动嵌入（每 30 秒一批），不会占满 CPU；如需立即全量构建，请在设置中点击“重建语义索引”。`
+      );
+      await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
+      this.semanticIndexer.countPendingFiles();
+      debugLog('Main', 'Semantic index first build started (paced auto drain)', { files: pending });
+    } else {
+      const pending = this.semanticIndexer.countPendingFiles();
+      if (pending > 0) {
+        // Draining a large backlog is paced (see SemanticIndexer): at most a
+        // few files per 30s, so the embedding service / CPU is never pegged
+        // while the index still catches up in the background.
         new Notice(
-          `语义索引未构建（共 ${pending} 个文件）：将在后台分批自动嵌入（每 30 秒一批），不会占满 CPU；如需立即全量构建，请在设置中点击“重建语义索引”。`
+          `语义索引有 ${pending} 个文件待嵌入：将在后台分批自动嵌入（每 30 秒一批）。如需立即补齐，请点击“增量更新”。`
         );
         await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
         this.semanticIndexer.countPendingFiles();
-        debugLog('Main', 'Semantic index first build started (paced auto drain)', { files: pending });
-      } else {
-        const pending = this.semanticIndexer.countPendingFiles();
-        if (pending > 0) {
-          // Draining a large backlog is paced (see SemanticIndexer): at most a
-          // few files per 30s, so the embedding service / CPU is never pegged
-          // while the index still catches up in the background.
-          new Notice(
-            `语义索引有 ${pending} 个文件待嵌入：将在后台分批自动嵌入（每 30 秒一批）。如需立即补齐，请点击“增量更新”。`
-          );
-          await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
-          this.semanticIndexer.countPendingFiles();
-          debugLog('Main', 'Semantic index backlog drain started (paced auto)', { files: pending });
-        }
+        debugLog('Main', 'Semantic index backlog drain started (paced auto)', { files: pending });
       }
-    } catch (e: any) {
-      debugLog('Main', 'Semantic index auto-update failed', { error: e.message });
-      new Notice(`语义索引自动更新失败：${e.message}`);
     }
   }
 
