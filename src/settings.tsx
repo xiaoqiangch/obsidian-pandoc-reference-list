@@ -765,7 +765,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     );
     semanticStatus.addButton((button) =>
       button
-        .setIcon('list-numbers')
+        .setIcon('list')
         .setTooltip('统计待嵌入')
         .onClick(() => {
           const pending = this.plugin.semanticIndexer.countPendingFiles();
@@ -786,7 +786,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     );
     semanticStatus.addButton((button) =>
       button
-        .setIcon('wrench')
+        .setIcon('refresh-ccw')
         .setTooltip('重建语义索引')
         .setWarning()
         .onClick(() => {
@@ -963,23 +963,6 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             return;
           }
           await runBatchConversion(this.plugin);
-          await renderBatchStats();
-        })
-    );
-
-    batchSetting.addButton((button) =>
-      button
-        .setIcon('rotate-ccw')
-        .setTooltip('转换全部（含已转换）')
-        .setWarning()
-        .onClick(async () => {
-          const b = getBatchProgress();
-          if (b.running) {
-            new Notice('批量转换已在进行中。');
-            return;
-          }
-          const { forceReconvertAll } = await import('./converter/convertAll');
-          await forceReconvertAll(this.plugin);
           await renderBatchStats();
         })
     );
