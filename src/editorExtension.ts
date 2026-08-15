@@ -1,6 +1,6 @@
 import { syntaxTree } from '@codemirror/language';
 import { tokenClassNodeProp } from '@codemirror/language';
-import { RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
+import { RangeSetBuilder, StateEffect, StateField, EditorSelection } from '@codemirror/state';
 import {
   Decoration,
   DecorationSet,
@@ -24,7 +24,6 @@ import {
   getCitationSegments,
 } from './parser/parser';
 import { BibManager, FileCache } from './bib/bibManager';
-import equal from 'fast-deep-equal';
 import { TooltipManager } from './tooltip';
 
 const ignoreListRegEx = /code|math|templater|hashtag/;
@@ -165,7 +164,16 @@ export const citeKeyPlugin = ViewPlugin.fromClass(
         ) ||
         (update.view.state.field(editorLivePreviewField) &&
           update.selectionSet &&
-          !update.view.plugin(livePreviewState)?.mousedown)
+          !update.view.plugin(livePreviewState)?.mousedown &&
+          // Cursor movement through plain text must NOT rebuild the whole
+          // decoration set: mkDeco slices + re-parses the visible document
+          // (and forces the syntax tree), which made every arrow key / click
+          // lag in live preview. Rebuild only when the old or new selection
+          // actually touches an existing citation decoration (citation marks
+          // are always present for citation spans, so both entering and
+          // leaving a citation are detected).
+          (decorationsTouchedBy(this.decorations, update.startState.selection) ||
+            decorationsTouchedBy(this.decorations, update.view.state.selection)))
       ) {
         this.decorations = this.mkDeco(update.view);
       }
@@ -186,6 +194,17 @@ export const citeKeyPlugin = ViewPlugin.fromClass(
 
       const matched = new Set<RenderedCitation>();
 
+      // Signature -> rendered citation, built once per rebuild. The previous
+      // per-segment `.find()` scanned the whole citation cache with a deep
+      // equal for every citation in the viewport — with a large bibliography
+      // and several citations on screen that ran thousands of comparisons per
+      // keystroke and was the main typing-lag hotspot.
+      const renderedBySig = new Map<string, RenderedCitation>();
+      for (const c of citekeyCache?.citations ?? []) {
+        const sig = JSON.stringify(onlyValType(c?.data || []));
+        if (!renderedBySig.has(sig)) renderedBySig.set(sig, c);
+      }
+
       for (const { from, to } of view.visibleRanges) {
         const range = view.state.sliceDoc(from, to);
         const segments = getCitationSegments(
@@ -195,14 +214,13 @@ export const citeKeyPlugin = ViewPlugin.fromClass(
 
         for (const match of segments) {
           if (!tree) tree = syntaxTree(view.state);
-          const rendered = citekeyCache?.citations.find(
-            (c) =>
-              !matched.has(c) &&
-              equal(onlyValType(c?.data || []), onlyValType(match))
-          );
-
+          const sig = JSON.stringify(onlyValType(match));
+          const rendered = renderedBySig.get(sig);
           if (rendered) {
             matched.add(rendered);
+            // One rendered citation per distinct segment occurrence, mirroring
+            // the previous `!matched.has(c)` guard.
+            renderedBySig.delete(sig);
           }
 
           if (isLivePreview) {
@@ -319,6 +337,21 @@ export const citeKeyPlugin = ViewPlugin.fromClass(
     decorations: (v) => v.decorations,
   }
 );
+
+/** True when any selection range touches an existing citation decoration.
+ *  `±1` widens the query so a cursor at the exact citation boundary is caught
+ *  (entering and leaving both need a decoration rebuild). */
+function decorationsTouchedBy(deco: DecorationSet, sel: EditorSelection): boolean {
+  for (const r of sel.ranges) {
+    let hit = false;
+    deco.between(Math.max(0, r.from - 1), r.to + 1, () => {
+      hit = true;
+      return false;
+    });
+    if (hit) return true;
+  }
+  return false;
+}
 
 export const setCiteKeyCache = StateEffect.define<FileCache>();
 export const citeKeyCacheField = StateField.define<FileCache>({
