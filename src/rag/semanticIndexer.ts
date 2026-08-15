@@ -39,10 +39,11 @@ const EMBED_CONCURRENCY = 3;
 const FAIL_RETRY_BASE_MS = 30000;
 const FAIL_RETRY_MAX_MS = 10 * 60 * 1000;
 // Minimum gap between background cache writes. Each write rewrites the full
-// vectors payload (tens of MB), so writing after every tiny batch would keep
-// the disk (and iCloud sync, when the index lives inside the vault) churning
-// non-stop. Manual runs flush immediately via {@link SemanticIndexer.flushCache}.
-const MIN_CACHE_WRITE_INTERVAL_MS = 60000;
+// vectors payload (hundreds of MB) and re-uploads it when the index lives
+// inside the iCloud-synced vault, so writing more often than every 5 minutes
+// kept freezing Obsidian's renderer. Manual runs flush immediately via
+// {@link SemanticIndexer.flushCache}.
+const MIN_CACHE_WRITE_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface SemanticIndexerSettings {
   enabled: boolean;
@@ -296,41 +297,48 @@ export class SemanticIndexer {
     this.cacheDirty = true;
     if (this.saveTimer) return;
     // Background writes are rate-limited: each write rewrites the full vector
-    // payload, and during a long backlog drain a naive 5s debounce would still
-    // rewrite tens of MB (and re-upload them, when the index lives inside an
-    // iCloud-synced vault) after every tiny batch.
+    // payload (hundreds of MB) and re-uploads it when the index lives inside
+    // an iCloud-synced vault. A 5-minute floor keeps the drain from freezing
+    // Obsidian's main thread every minute with a synchronous serialize+write;
+    // embedding progress is only ever lost on a crash within that window.
     const elapsed = Date.now() - this.lastCacheWriteAt;
     const delay = Math.max(5000, MIN_CACHE_WRITE_INTERVAL_MS - elapsed);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       if (this.cacheDirty) {
         this.cacheDirty = false;
-        this.writeCache();
+        void this.writeCache();
       }
     }, delay);
   }
 
   /** Write the cache immediately when dirty (end of manual runs, unload). */
-  flushCache(): void {
+  async flushCache(): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     if (this.cacheDirty) {
       this.cacheDirty = false;
-      this.writeCache();
+      await this.writeCache();
     }
   }
 
-  private writeCache(): void {
+  private async writeCache(): Promise<void> {
     try {
       const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
       const dir = path.dirname(cacheJsonPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const json = this.index.toJSON();
       json.version = CACHE_VERSION;
-      fs.writeFileSync(cacheJsonPath, JSON.stringify(json), 'utf-8');
-      fs.writeFileSync(cacheBinPath, this.index.toVectorBuffer());
+      const bin = this.index.toVectorBuffer();
+      // Serialization (in-memory) is unavoidable on the main thread, but the
+      // disk write of the multi-hundred-MB payload is moved off-thread so the
+      // renderer never blocks on disk I/O into an iCloud-synced folder.
+      await Promise.all([
+        fs.promises.writeFile(cacheJsonPath, JSON.stringify(json), 'utf-8'),
+        fs.promises.writeFile(cacheBinPath, bin),
+      ]);
       this.lastCacheWriteAt = Date.now();
       debugLog('SemanticIndexer', 'Cache saved', {
         docs: this.index.docCount,
@@ -385,7 +393,7 @@ export class SemanticIndexer {
       });
 
       this.scheduleSave();
-      this.flushCache();
+      await this.flushCache();
       debugLog('SemanticIndexer', 'Full build finished', { files: files.length });
     } finally {
       this.busy = false;
@@ -519,7 +527,7 @@ export class SemanticIndexer {
       if (indexed > 0 || removed > 0) {
         this.scheduleSave();
       }
-      if (!opts?.auto) this.flushCache();
+      if (!opts?.auto) await this.flushCache();
       // When files are left in failure cooldown, wake up at the earliest
       // cooldown expiry so the drain resumes without waiting for a new vault
       // event. The batch path above only chains follow-ups while more than
@@ -745,7 +753,9 @@ export class SemanticIndexer {
       clearTimeout(this.followUpTimer);
       this.followUpTimer = null;
     }
-    this.flushCache();
+    // Fire-and-forget: on plugin unload the process stays alive long enough
+    // for the async write to finish, and it must not block teardown.
+    void this.flushCache();
   }
 }
 

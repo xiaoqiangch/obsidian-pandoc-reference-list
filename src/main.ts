@@ -191,38 +191,52 @@ export default class ReferenceList extends Plugin {
     deferAfterStartup(() => this.initRagIndex(), 2000);
     deferAfterStartup(() => this.initSemanticIndex(), 4000);
 
+    // RAG full-text re-index is cheap and stat-based, so it stays near-real-time
+    // on file changes. Semantic (embedding) indexing is deliberately debounced
+    // much longer — embedding hundreds of MB of vectors into an iCloud-synced
+    // vault is heavy and does not need to be real-time — so a burst of note
+    // edits only triggers one re-embed well after the user has stopped typing.
     const ragUpdate = debounce(
       () => {
         if (this.settings.enableRagSearch) {
           this.ragIndexer.incrementalUpdate().catch(() => {});
         }
-        // Semantic (embedding) indexing auto-updates on file events too. The
-        // availability of the embedding engine is re-probed inside
-        // incrementalUpdate on every run, so a machine whose Ollama service
-        // comes back online (or whose API config was fixed) automatically
-        // resumes indexing without a plugin reload; an unreachable service is
-        // simply skipped. Auto runs are bounded (see SemanticIndexer) so a
-        // large pending backlog cannot pin the CPU / embedding service.
-        if (this.semanticIndexer.enabled) {
-          this.semanticIndexer.incrementalUpdate(undefined, { auto: true }).catch(() => {});
-        }
       },
       5000,
       false
     );
+    // The availability of the embedding engine is re-probed inside
+    // incrementalUpdate on every run, so a machine whose Ollama service comes
+    // back online (or whose API config was fixed) automatically resumes
+    // indexing without a plugin reload; an unreachable service is simply
+    // skipped. Auto runs are bounded (see SemanticIndexer) so a large pending
+    // backlog cannot pin the CPU / embedding service.
+    const semanticUpdate = debounce(
+      () => {
+        if (this.semanticIndexer.enabled) {
+          this.semanticIndexer.incrementalUpdate(undefined, { auto: true }).catch(() => {});
+        }
+      },
+      15 * 60 * 1000,
+      false
+    );
+    const onMdChanged = () => {
+      ragUpdate();
+      semanticUpdate();
+    };
     this.registerEvent(
       app.vault.on('create', (file) => {
-        if (file instanceof TFile && file.extension === 'md') ragUpdate();
+        if (file instanceof TFile && file.extension === 'md') onMdChanged();
       })
     );
     this.registerEvent(
       app.vault.on('modify', (file) => {
-        if (file instanceof TFile && file.extension === 'md') ragUpdate();
+        if (file instanceof TFile && file.extension === 'md') onMdChanged();
       })
     );
     this.registerEvent(
       app.vault.on('delete', (file) => {
-        if (file instanceof TFile && file.extension === 'md') ragUpdate();
+        if (file instanceof TFile && file.extension === 'md') onMdChanged();
       })
     );
 
