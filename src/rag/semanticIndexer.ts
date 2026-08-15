@@ -12,19 +12,25 @@ const path = require('path');
 const CACHE_VERSION = 1;
 // Every file costs embedding API calls, so yield between files more often.
 const IDLE_BATCH = 5;
-// A single background (auto) run embeds at most this many files. A large
-// pending backlog (e.g. the first build of a big vault) is drained gradually:
-// one batch per MIN_AUTO_RUN_INTERVAL_MS. This keeps embedding progress going
-// in the background without pinning the CPU / embedding service like a one-shot
-// full build would.
-const MAX_AUTO_RUN_FILES = 30;
-// Minimum gap between two auto-run batches that are draining a large backlog.
-// The embedding model (e.g. bge-m3) is CPU-bound, so batches are spaced out to
-// keep the machine responsive while the index still catches up over time.
-const MIN_AUTO_RUN_INTERVAL_MS = 10000;
+// Background (auto) run bounds. These were tuned for a CPU-bound local
+// embedding service (bge-m3 via Docker) where the drain had to be paced to
+// avoid pinning the CPU. The engine now runs on the Metal GPU (several
+// thousand tok/s), so the drain is much looser: bigger batches, short gaps.
+const MAX_AUTO_RUN_FILES = 100;
+const MIN_AUTO_RUN_INTERVAL_MS = 2000;
 // Estimated-chunk budget per auto batch, so a few huge notes cannot monopolize
 // a batch (a 1MB note alone would embed ~1k chunks in a single run).
-const AUTO_CHUNK_BUDGET = 600;
+const AUTO_CHUNK_BUDGET = 1500;
+// Auto runs only embed files estimated below this many chunks. Whole books
+// converted to markdown (a 24MB 资治通鉴 is ~10k chunks) would otherwise
+// monopolize a run for tens of minutes and make the drain look stuck; they
+// stay pending and are embedded by the manual "增量更新" run instead.
+const AUTO_DEFER_CHUNKS = 600;
+// Embedding requests run concurrently so the GPU's idle cycles between
+// per-batch scheduling are filled. Measured on bge-m3 / M4 Pro Metal: 3-way
+// concurrency ≈ 1.6x the serial throughput. Batches stay at 32 texts (see
+// embedding.ts) — larger batches measured *slower*.
+const EMBED_CONCURRENCY = 3;
 // Files that fail to embed (read error, embedding error, or no embeddable
 // content — e.g. iCloud placeholders / empty notes) are retried with an
 // exponential backoff instead of occupying a batch slot every single run,
@@ -74,6 +80,13 @@ export interface IndexProgress {
 export interface IndexRunOptions {
   auto?: boolean;
   maxFiles?: number;
+}
+
+interface FilePoolHooks {
+  onIndexed: (f: TFile) => void;
+  onEmpty?: (f: TFile) => void;
+  onFailed: (f: TFile, e: Error) => void;
+  onProgress: (done: number, total: number, f: TFile) => void;
 }
 
 /**
@@ -352,27 +365,22 @@ export class SemanticIndexer {
       this.index = new SemanticVectorIndex();
       this.index.model = this.settings.model;
       this.failedCount = 0;
+      const targets = files.slice().sort((a, b) => (a.stat.size || 0) - (b.stat.size || 0));
 
-      for (let i = 0; i < files.length; i++) {
-        if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
-        try {
-          const outcome = await this.indexFile(files[i]);
-          if (outcome === 'indexed') this.clearFailed(files[i].path);
-        } catch (e: any) {
+      await this.runFilePool(targets, {
+        onIndexed: (f) => this.clearFailed(f.path),
+        onFailed: (f, e) => {
           this.failedCount++;
           debugLog('SemanticIndexer', 'indexFile failed, skipping', {
-            path: files[i].path,
+            path: f.path,
             error: e.message,
           });
-        }
-        this.progress = {
-          done: i + 1,
-          total: files.length,
-          path: files[i].path,
-          failed: this.failedCount,
-        };
-        onProgress?.(this.progress);
-      }
+        },
+        onProgress: (done, total, f) => {
+          this.progress = { done, total, path: f.path, failed: this.failedCount };
+          onProgress?.(this.progress);
+        },
+      });
 
       this.scheduleSave();
       this.flushCache();
@@ -420,29 +428,25 @@ export class SemanticIndexer {
         }
       }
 
-      // Background (auto) runs only embed *small* deltas — e.g. a note the user
-      // just created or edited. A large backlog (first build of a big vault, or
-      // many pending files) is deliberately SKIPPED and left to a manual
-      // "重建语义索引" / "增量更新": auto-draining thousands of files would keep
-      // the embedding service (and CPU) pegged for an unbounded time, and is
-      // exactly what happened during startup in large vaults.
-      // Background (auto) runs: small deltas (a note the user just created or
-      // edited) are embedded immediately. A large backlog is drained gradually
-      // — at most MAX_AUTO_RUN_FILES per run, spaced by MIN_AUTO_RUN_INTERVAL_MS
-      // — so the index still progresses without pinning the CPU / embedding
-      // service like a one-shot full build would.
-      //
       // Files in failure cooldown are excluded from auto runs entirely: a
       // permanently-failing file (unreadable placeholder, no embeddable text)
       // would otherwise be retried in every run and occupy batch slots forever.
+      // Auto runs also defer whole-book giants (> AUTO_DEFER_CHUNKS estimated
+      // chunks) so one 20-min file cannot monopolize the drain; they stay
+      // pending and are embedded by the manual "增量更新" run.
       let eligible = changed;
       if (opts?.auto) {
-        eligible = changed.filter((f) => !this.isInFailCooldown(f.path));
-        const cooledDown = changed.length - eligible.length;
-        if (cooledDown > 0) {
-          debugLog('SemanticIndexer', 'skipped files in failure cooldown', { cooledDown });
+        eligible = changed.filter(
+          (f) => !this.isInFailCooldown(f.path) && this.estChunks(f) <= AUTO_DEFER_CHUNKS
+        );
+        const skipped = changed.length - eligible.length;
+        if (skipped > 0) {
+          debugLog('SemanticIndexer', 'skipped cooldown/deferred files in auto run', { skipped });
         }
       }
+      // Small files first: the index grows fast, search becomes usable quickly,
+      // and progress is visible instead of a 20-minute single-file stall.
+      eligible.sort((a, b) => (a.stat.size || 0) - (b.stat.size || 0));
       let targets = eligible;
       if (opts?.auto && eligible.length > (opts.maxFiles ?? MAX_AUTO_RUN_FILES)) {
         const elapsed = Date.now() - this.lastAutoRunAt;
@@ -458,14 +462,13 @@ export class SemanticIndexer {
         }
         this.lastAutoRunAt = Date.now();
         // Pick the first files for this batch, bounded by BOTH a file count and
-        // an estimated chunk budget so one huge file cannot monopolize a batch
-        // (a 1MB note alone would embed ~1k chunks in a single run).
+        // an estimated chunk budget so one huge file cannot monopolize a batch.
         const maxFiles = opts.maxFiles ?? MAX_AUTO_RUN_FILES;
         targets = [];
         let estChunks = 0;
         for (const f of eligible) {
           if (targets.length >= maxFiles) break;
-          const est = Math.max(1, Math.ceil((f.stat.size || 0) / Math.max(1, this.settings.chunkSize)));
+          const est = this.estChunks(f);
           if (estChunks + est > AUTO_CHUNK_BUDGET && targets.length > 0) break;
           estChunks += est;
           targets.push(f);
@@ -475,43 +478,36 @@ export class SemanticIndexer {
 
       this.failedCount = 0;
       let indexed = 0;
-      // Manual runs over a large pending backlog (e.g. first build of a big
-      // vault) embed serially and can take a long time on a local CPU service;
-      // surface that so the run does not look stalled.
+      // Manual runs over a large pending backlog embed concurrently on the GPU;
+      // surface the scale so the run does not look stalled.
       if (!opts?.auto && targets.length > 100) {
         new Notice(
-          `增量更新：还有 ${targets.length} 个文件待嵌入，本地串行处理预计需要较长时间（每批 32 个分块约 30–60 秒）。`
+          `增量更新：还有 ${targets.length} 个文件待嵌入（GPU 并发 ${EMBED_CONCURRENCY} 路），其中超大文件（如整本书）会较慢。`
         );
       }
-      for (let i = 0; i < targets.length; i++) {
-        if (i > 0 && i % IDLE_BATCH === 0) await yieldToIdle();
-        try {
-          const outcome = await this.indexFile(targets[i]);
-          if (outcome === 'indexed') {
-            indexed++;
-            this.clearFailed(targets[i].path);
-          } else {
-            // No embeddable text (empty note, iCloud placeholder): treat as a
-            // failure for backoff purposes so it does not get retried every run.
-            this.markFailed(targets[i].path);
-          }
-        } catch (e: any) {
+      await this.runFilePool(targets, {
+        onIndexed: (f) => {
+          indexed++;
+          this.clearFailed(f.path);
+        },
+        onEmpty: (f) => {
+          // No embeddable text (empty note, iCloud placeholder): treat as a
+          // failure for backoff purposes so it does not get retried every run.
+          this.markFailed(f.path);
+        },
+        onFailed: (f, e) => {
           this.failedCount++;
-          this.markFailed(targets[i].path);
+          this.markFailed(f.path);
           debugLog('SemanticIndexer', 'indexFile failed during incremental update', {
-            path: targets[i].path,
+            path: f.path,
             error: e.message,
           });
-          continue;
-        }
-        this.progress = {
-          done: i + 1,
-          total: targets.length,
-          path: targets[i].path,
-          failed: this.failedCount,
-        };
-        onProgress?.(this.progress);
-      }
+        },
+        onProgress: (done, total, f) => {
+          this.progress = { done, total, path: f.path, failed: this.failedCount };
+          onProgress?.(this.progress);
+        },
+      });
 
       // Persist only when the index actually changed. The previous condition
       // (targets.length > 0 || current.size !== docCount) was true on every
@@ -628,6 +624,50 @@ export class SemanticIndexer {
       vectors
     );
     return 'indexed';
+  }
+
+  /** Estimated chunk count for a file (bytes / chunkSize), minimum 1. */
+  private estChunks(f: TFile): number {
+    return Math.max(1, Math.ceil((f.stat.size || 0) / Math.max(1, this.settings.chunkSize)));
+  }
+
+  /**
+   * Embed a list of files with {@link EMBED_CONCURRENCY} workers. Concurrency
+   * fills the GPU's idle cycles between per-request scheduling (measured ~1.6x
+   * vs serial on bge-m3 / M4 Pro Metal); embedding itself stays serial within
+   * a file (batches of 32 texts are already optimal). The main thread is freed
+   * by the await points, and a yield-to-idle every IDLE_BATCH keeps the UI
+   * responsive.
+   */
+  private async runFilePool(
+    targets: TFile[],
+    hooks: FilePoolHooks
+  ): Promise<void> {
+    if (targets.length === 0) return;
+    let cursor = 0;
+    let done = 0;
+    const workers = Array.from(
+      { length: Math.min(EMBED_CONCURRENCY, targets.length) },
+      async () => {
+        while (cursor < targets.length) {
+          const f = targets[cursor++];
+          try {
+            const outcome = await this.indexFile(f);
+            if (outcome === 'indexed') {
+              hooks.onIndexed(f);
+            } else {
+              hooks.onEmpty?.(f);
+            }
+          } catch (e: any) {
+            hooks.onFailed(f, e);
+          }
+          done++;
+          hooks.onProgress(done, targets.length, f);
+          if (done % IDLE_BATCH === 0) await yieldToIdle();
+        }
+      }
+    );
+    await Promise.all(workers);
   }
 
   /** Record a failed embed attempt and return the retry-after timestamp. */

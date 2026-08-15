@@ -597,9 +597,9 @@ export default class ReferenceList extends Plugin {
     }
     if (!loaded) {
       const pending = this.semanticIndexer.countPendingFiles();
-      new Notice(
-        `语义索引未构建（共 ${pending} 个文件）：将在后台分批自动嵌入（每 30 秒一批），不会占满 CPU；如需立即全量构建，请在设置中点击“重建语义索引”。`
-      );
+        new Notice(
+          `语义索引未构建（共 ${pending} 个文件）：将在后台分批自动嵌入（GPU 并行，小文件优先）；超大文件（整本书）留给手动“增量更新”。`
+        );
       await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
       this.semanticIndexer.countPendingFiles();
       debugLog('Main', 'Semantic index first build started (paced auto drain)', { files: pending });
@@ -610,7 +610,7 @@ export default class ReferenceList extends Plugin {
         // few files per 30s, so the embedding service / CPU is never pegged
         // while the index still catches up in the background.
         new Notice(
-          `语义索引有 ${pending} 个文件待嵌入：将在后台分批自动嵌入（每 30 秒一批）。如需立即补齐，请点击“增量更新”。`
+          `语义索引有 ${pending} 个文件待嵌入：后台自动分批嵌入中（小文件优先）；超大文件建议手动点击“增量更新”。`
         );
         await this.semanticIndexer.incrementalUpdate(undefined, { auto: true });
         this.semanticIndexer.countPendingFiles();

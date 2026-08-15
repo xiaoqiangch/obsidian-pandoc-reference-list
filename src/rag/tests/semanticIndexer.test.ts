@@ -150,20 +150,20 @@ describe('SemanticIndexer bounded auto runs', () => {
       extension: 'md',
     }));
 
-  test('auto incrementalUpdate drains a large backlog one paced batch at a time', async () => {
-    // Regression: auto runs must drain a big backlog *gradually* (one
-    // MAX_AUTO_RUN_FILES batch per MIN_AUTO_RUN_INTERVAL_MS) instead of all at
-    // once — a one-shot full drain pinned the embedding service / CPU.
+  test('auto incrementalUpdate drains a very large backlog in bounded batches', async () => {
+    // GPU-era design: a small backlog drains in one run, but a backlog larger
+    // than MAX_AUTO_RUN_FILES is still split into bounded batches (one batch
+    // per MIN_AUTO_RUN_INTERVAL_MS) so a single run cannot run away.
     const app = makeApp();
-    app.vault.getMarkdownFiles = () => makeManyFiles(60);
+    app.vault.getMarkdownFiles = () => makeManyFiles(150);
     app.vault.cachedRead = async () => 'content x'.repeat(50);
 
     const indexer = new SemanticIndexer(app, 'literature', makeSettings());
     await indexer.incrementalUpdate(undefined, { auto: true });
     expect(indexer.building).toBe(false);
-    // Only the first paced batch is embedded; the rest is left for follow-ups.
-    expect(indexer.index.docCount).toBeLessThan(60);
+    // Only the first bounded batch is embedded; the rest is left for follow-ups.
     expect(indexer.index.docCount).toBeGreaterThan(0);
+    expect(indexer.index.docCount).toBeLessThan(150);
     indexer.destroy();
   });
 
@@ -176,6 +176,27 @@ describe('SemanticIndexer bounded auto runs', () => {
     await indexer.incrementalUpdate(undefined, { auto: true });
     expect(indexer.building).toBe(false);
     expect(indexer.index.docCount).toBe(3);
+    indexer.destroy();
+  });
+
+  test('auto run defers whole-book giants (>AUTO_DEFER_CHUNKS) to manual runs', async () => {
+    // Regression: a 20MB converted book is ~10k chunks and would monopolize an
+    // auto run for tens of minutes. Auto runs must skip it (leaving it pending
+    // for the manual "增量更新"), while the manual run embeds it.
+    const app = makeApp();
+    app.vault.getMarkdownFiles = () => [
+      { path: 'notes/small.md', stat: { mtime: Date.now(), size: 400 }, extension: 'md' },
+      { path: 'literature/Book.md', stat: { mtime: Date.now(), size: 10 * 1024 * 1024 }, extension: 'md' },
+    ];
+    app.vault.cachedRead = async () => 'content x'.repeat(50);
+
+    const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+    await indexer.incrementalUpdate(undefined, { auto: true });
+    // Only the small file is embedded by the auto run; the giant stays pending.
+    expect(indexer.index.docCount).toBe(1);
+
+    await indexer.incrementalUpdate();
+    expect(indexer.index.docCount).toBe(2);
     indexer.destroy();
   });
 
