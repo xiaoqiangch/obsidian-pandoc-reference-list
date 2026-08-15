@@ -109,6 +109,8 @@ export class SemanticIndexer {
   /** Number of vault md files missing from the index or changed since last
    *  embed (stale). -1 until first computed. */
   pendingCount = -1;
+  /** Total vault md files eligible for indexing; set by countPendingFiles(). */
+  eligibleTotal = 0;
   private app: App;
   private outputPath: string;
   private settings: SemanticIndexerSettings;
@@ -582,8 +584,19 @@ export class SemanticIndexer {
       if (modelMismatch || docChanged(this.index.getMeta(f.path), f.stat)) pending++;
     }
     this.pendingCount = pending;
+    // Denominator for the overall-progress display in the settings panel.
+    this.eligibleTotal = total;
     debugLog('SemanticIndexer', 'countPendingFiles', { total, pending, modelMismatch });
     return pending;
+  }
+
+  /** Total vault md files eligible for indexing (overall-progress denominator). */
+  countEligibleFiles(): number {
+    let n = 0;
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (shouldIndexPath(f.path, undefined, this.indexOptions())) n++;
+    }
+    return n;
   }
 
   /**

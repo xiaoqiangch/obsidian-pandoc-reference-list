@@ -750,7 +750,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     const semanticStatus = new Setting(containerEl).setName('语义索引状态');
     semanticStatus.addButton((button) =>
-      button.setButtonText('测试连接').onClick(async () => {
+      button.setIcon('plug').setTooltip('测试连接').onClick(async () => {
         try {
           const dim = await testEmbeddingConnection({
             apiUrl: this.plugin.settings.semanticEmbedApiUrl || '',
@@ -765,7 +765,8 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     );
     semanticStatus.addButton((button) =>
       button
-        .setButtonText('统计待嵌入')
+        .setIcon('list-numbers')
+        .setTooltip('统计待嵌入')
         .onClick(() => {
           const pending = this.plugin.semanticIndexer.countPendingFiles();
           new Notice(
@@ -777,14 +778,16 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     );
     semanticStatus.addButton((button) =>
       button
-        .setButtonText('增量更新')
+        .setIcon('play')
+        .setTooltip('增量更新')
         .onClick(() => {
           this.plugin.updateSemanticIndex();
         })
     );
     semanticStatus.addButton((button) =>
       button
-        .setButtonText('重建语义索引')
+        .setIcon('wrench')
+        .setTooltip('重建语义索引')
         .setWarning()
         .onClick(() => {
           this.plugin.rebuildSemanticIndex();
@@ -794,28 +797,36 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     const renderSemanticStatus = () => {
       const idx = this.plugin.semanticIndexer;
       semanticStatus.descEl.empty();
+      const total = idx.eligibleTotal > 0 ? idx.eligibleTotal : idx.countEligibleFiles();
+      const indexed = idx.index.docCount;
       if (idx.building && idx.progress) {
         const p = idx.progress;
-        const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+        const batchPct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+        const overallPct = total > 0 ? Math.round((indexed / total) * 100) : 0;
         semanticStatus.descEl.createDiv({
           cls: 'pwc-semantic-progress-text',
-          text: `正在构建语义索引：${p.done}/${p.total} 个文件（${pct}%）${
-            p.failed > 0 ? `，已跳过 ${p.failed} 个失败文件` : ''
+          text: `正在嵌入：批次 ${p.done}/${p.total} 个文件（${batchPct}%）${
+            p.failed > 0 ? `，已跳过 ${p.failed} 个` : ''
           }`,
         });
         const bar = semanticStatus.descEl.createDiv({
           cls: 'pwc-conversion-progress-bar',
         });
-        bar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' }).style.width = `${pct}%`;
+        bar.createDiv({ cls: 'pwc-conversion-progress-bar-fill' }).style.width = `${batchPct}%`;
         if (p.path) {
           semanticStatus.descEl.createDiv({
             cls: 'pwc-semantic-progress-path',
             text: p.path,
           });
         }
-      } else {
         semanticStatus.descEl.createDiv({
-          text: `已索引 ${idx.index.docCount} 个文件 / ${idx.index.chunkCount} 个分块${
+          cls: 'pwc-semantic-progress-text',
+          text: `整体进度：${indexed}/${total} 个文件（${overallPct}%）`,
+        });
+      } else {
+        const overallPct = total > 0 ? Math.round((indexed / total) * 100) : 0;
+        semanticStatus.descEl.createDiv({
+          text: `已索引 ${indexed} 个文件 / ${idx.index.chunkCount} 个分块${
             idx.enabled ? '' : '（语义检索未启用）'
           }${idx.failedCount > 0 ? `（上次构建跳过 ${idx.failedCount} 个失败文件）` : ''}。`,
         });
@@ -824,7 +835,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
             cls: 'pwc-semantic-pending-count',
             text:
               idx.pendingCount > 0
-                ? `还有 ${idx.pendingCount} 个文件需要嵌入。`
+                ? `整体进度 ${overallPct}%（${indexed}/${total}），还有 ${idx.pendingCount} 个文件待嵌入。`
                 : '索引已是最新，无需嵌入。',
           });
         }
@@ -838,7 +849,18 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     if (this.semanticStatusTimer !== null) {
       window.clearInterval(this.semanticStatusTimer);
     }
-    this.semanticStatusTimer = window.setInterval(renderSemanticStatus, 500);
+    // Refresh the pending/overall counts every few seconds so the displayed
+    // numbers track the background drain (countPendingFiles walks the vault
+    // file list, so it is throttled instead of run on every 500ms tick).
+    let lastPendingRefresh = 0;
+    this.semanticStatusTimer = window.setInterval(() => {
+      const now = Date.now();
+      if (now - lastPendingRefresh > 5000) {
+        lastPendingRefresh = now;
+        this.plugin.semanticIndexer.countPendingFiles();
+      }
+      renderSemanticStatus();
+    }, 500);
 
     // ---- 批量转换（所有附件）----
     new Setting(containerEl).setName('批量转换（PDF/EPUB → MD）').setHeading();
@@ -913,7 +935,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
     };
 
     batchSetting.addButton((button) =>
-      button.setButtonText('刷新统计').onClick(async () => {
+      button.setIcon('refresh-cw').setTooltip('刷新统计').onClick(async () => {
         button.setDisabled(true);
         try {
           await renderBatchStats();
@@ -931,7 +953,8 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     batchSetting.addButton((button) =>
       button
-        .setButtonText('一键批量转换')
+        .setIcon('zap')
+        .setTooltip('一键批量转换（仅待转换附件）')
         .setCta()
         .onClick(async () => {
           const b = getBatchProgress();
@@ -946,7 +969,8 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
 
     batchSetting.addButton((button) =>
       button
-        .setButtonText('转换全部（含已转换）')
+        .setIcon('rotate-ccw')
+        .setTooltip('转换全部（含已转换）')
         .setWarning()
         .onClick(async () => {
           const b = getBatchProgress();
