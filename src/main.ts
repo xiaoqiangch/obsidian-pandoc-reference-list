@@ -20,11 +20,8 @@ import {
 } from './editorExtension';
 import { t } from './lang/helpers';
 import { processCiteKeys } from './markdownPostprocessor';
-import {
-  DEFAULT_SETTINGS,
-  ReferenceListSettings,
-  ReferenceListSettingsTab,
-} from './settings';
+import { DEFAULT_SETTINGS, ReferenceListSettings } from './settingsDefaults';
+import { LazySettingsTab } from './lazySettingsTab';
 import { TooltipManager } from './tooltip';
 import { ReferenceListView, viewType } from './view';
 import { PromiseCapability, fixPath, getVaultRoot, debugLog, isLocalApiUrl } from './helpers';
@@ -68,6 +65,20 @@ export default class ReferenceList extends Plugin {
     this.initPromise.resolve();
     debugLog('Main', 'initPromise resolved');
 
+    // Heavy startup work (bibliography loading, pandoc discovery, index
+    // building) is deferred so it does not compete with Obsidian's own startup
+    // on the main thread. The app gets to render first; these run a moment
+    // later and pick up where they left off.
+    const deferAfterStartup = (fn: () => void, delay = 3000) => {
+      window.setTimeout(() => {
+        try {
+          fn();
+        } catch (e) {
+          debugLog('Main', 'Deferred startup task failed', { error: (e as any)?.message });
+        }
+      }, delay);
+    };
+
     try {
       this.registerView(
         viewType,
@@ -104,28 +115,34 @@ export default class ReferenceList extends Plugin {
         excludeFolders: this.settings.indexExcludeFolders || [],
       }
     );
-    this.initPromise.promise
-      .then(() => {
-        debugLog('Main', 'initPromise.then started');
-        // Always load bib files first, then optionally load Zotero
-        return this.bibManager.loadGlobalBibFile().then(() => {
-          if (this.settings.pullFromZotero) {
-            debugLog('Main', 'pulling from Zotero');
-            return this.bibManager.loadAndRefreshGlobalZBib();
-          }
+    // Bibliography loading (cache parse / pandoc conversion + citeproc engine
+    // + Fuse index build) used to start immediately inside onload(), adding
+    // synchronous CPU work to Obsidian's startup window. Delay it briefly so
+    // the app renders first; the status bar stays in "loading" until it's done.
+    deferAfterStartup(() => {
+      this.initPromise.promise
+        .then(() => {
+          debugLog('Main', 'initPromise.then started');
+          // Always load bib files first, then optionally load Zotero
+          return this.bibManager.loadGlobalBibFile().then(() => {
+            if (this.settings.pullFromZotero) {
+              debugLog('Main', 'pulling from Zotero');
+              return this.bibManager.loadAndRefreshGlobalZBib();
+            }
+          });
+        })
+        .then(() => {
+          debugLog('Main', 'bib files loaded successfully');
+        })
+        .catch((e) => {
+          debugLog('Main', 'error during bib initialization', e);
+          new Notice(`${t('Error rendering bibliography.')}: ${e.message}`);
+        })
+        .finally(() => {
+          debugLog('Main', 'bibManager initPromise resolving');
+          this.bibManager.initPromise.resolve();
         });
-      })
-      .then(() => {
-        debugLog('Main', 'bib files loaded successfully');
-      })
-      .catch((e) => {
-        debugLog('Main', 'error during bib initialization', e);
-        new Notice(`${t('Error rendering bibliography.')}: ${e.message}`);
-      })
-      .finally(() => {
-        debugLog('Main', 'bibManager initPromise resolving');
-        this.bibManager.initPromise.resolve();
-      });
+    }, 1500);
 
     // Safety timeout for bibManager initialization
     setTimeout(() => {
@@ -135,7 +152,7 @@ export default class ReferenceList extends Plugin {
       }
     }, 60000);
 
-    this.addSettingTab(new ReferenceListSettingsTab(this));
+    this.addSettingTab(new LazySettingsTab(this));
     this.registerEditorSuggest(new CiteSuggest(app, this));
     console.log('ReferenceList: CiteSuggest registered');
     this.tooltipManager = new TooltipManager(this);
@@ -167,47 +184,44 @@ export default class ReferenceList extends Plugin {
       );
     }
 
-    // No need to block execution
-    fixPath().then(async () => {
-      if (!this.settings.pathToPandoc) {
-        try {
-          // Attempt to find if/where pandoc is located on the user's machine
-          const pathToPandoc = await which('pandoc');
-          this.settings.pathToPandoc = pathToPandoc;
-          this.saveSettings();
-        } catch {
-          // We can ignore any errors here
+    // Resolving the PATH (spawns a login shell) and probing for pandoc spawn
+    // child processes; defer past the startup window.
+    deferAfterStartup(() => {
+      fixPath().then(async () => {
+        if (!this.settings.pathToPandoc) {
+          try {
+            // Attempt to find if/where pandoc is located on the user's machine
+            const pathToPandoc = await which('pandoc');
+            this.settings.pathToPandoc = pathToPandoc;
+            this.saveSettings();
+          } catch {
+            // We can ignore any errors here
+          }
         }
-      }
 
-      this.app.workspace.trigger('parse-style-settings');
-    });
+        this.app.workspace.trigger('parse-style-settings');
+      });
+    }, 800);
 
     // Repair conversion state leaked by a previous session (plugin reload /
-    // Obsidian quit mid-conversion). Runs before any conversion can start, so
-    // anything still marked in_progress is stale by definition.
-    try {
-      const repaired = reconcileStaleConversions();
-      if (repaired.completed || repaired.failed) {
-        debugLog('Main', 'Reconciled stale conversion state', repaired);
+    // Obsidian quit mid-conversion). Deferred so the synchronous state-file
+    // read does not add to the startup window; still runs long before any
+    // conversion can begin.
+    deferAfterStartup(() => {
+      try {
+        const repaired = reconcileStaleConversions();
+        if (repaired.completed || repaired.failed) {
+          debugLog('Main', 'Reconciled stale conversion state', repaired);
+        }
+      } catch (e) {
+        debugLog('Main', 'Conversion state reconciliation failed', e);
       }
-    } catch (e) {
-      debugLog('Main', 'Conversion state reconciliation failed', e);
-    }
+    }, 2000);
 
     // RAG full-text index: build in the background, keep it incrementally updated.
     // Deferred until after Obsidian finishes its own startup: loading the index
     // (hundreds of MB) synchronously at plugin load froze the whole app for
     // seconds. Running it a moment later keeps startup instant.
-    const deferAfterStartup = (fn: () => void, delay = 3000) => {
-      window.setTimeout(() => {
-        try {
-          fn();
-        } catch (e) {
-          debugLog('Main', 'Deferred startup task failed', { error: (e as any)?.message });
-        }
-      }, delay);
-    };
     deferAfterStartup(() => this.initRagIndex(), 2000);
     deferAfterStartup(() => this.initSemanticIndex(), 4000);
 

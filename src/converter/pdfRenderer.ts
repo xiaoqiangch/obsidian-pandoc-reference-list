@@ -1,12 +1,23 @@
 import { debugLog } from '../helpers';
 
-const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
-const OPS = pdfjsLib.OPS;
+// pdf.js is large (~700KB) and its module evaluation is expensive, so it must
+// not run on the plugin's startup critical path. It is loaded once, on demand,
+// the first time any PDF operation is actually needed.
+let pdfjsLibPromise: Promise<any> | null = null;
 
-try {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-} catch (e) {
-  debugLog('PdfRenderer', 'Failed to set workerSrc', e);
+function getPdfjsLib(): Promise<any> {
+  if (!pdfjsLibPromise) {
+    pdfjsLibPromise = Promise.resolve().then(() => {
+      const lib = require('pdfjs-dist/legacy/build/pdf.js');
+      try {
+        lib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${lib.version}/pdf.worker.min.js`;
+      } catch (e) {
+        debugLog('PdfRenderer', 'Failed to set workerSrc', e);
+      }
+      return lib;
+    });
+  }
+  return pdfjsLibPromise;
 }
 
 export interface ExtractedImage {
@@ -29,6 +40,7 @@ export async function renderPdfPages(
 ): Promise<RenderedPage[]> {
   debugLog('PdfRenderer', 'renderPdfPages started', { pdfPath, scale });
 
+  const pdfjsLib = await getPdfjsLib();
   const fs = require('fs');
   const data = new Uint8Array(fs.readFileSync(pdfPath));
   const loadingTask = pdfjsLib.getDocument({ data });
@@ -53,7 +65,7 @@ export async function renderPdfPages(
 
     const imageDataUrl = canvas.toDataURL('image/png');
 
-    const extractedImages = await extractImagesFromPage(page, i, imagesDir);
+    const extractedImages = await extractImagesFromPage(page, i, imagesDir, pdfjsLib);
 
     pages.push({
       pageNumber: i,
@@ -79,6 +91,7 @@ export async function renderPdfPages(
 }
 
 export async function getPdfPageCount(pdfPath: string): Promise<number> {
+  const pdfjsLib = await getPdfjsLib();
   const fs = require('fs');
   const data = new Uint8Array(fs.readFileSync(pdfPath));
   const loadingTask = pdfjsLib.getDocument({ data });
@@ -94,6 +107,7 @@ export async function getPdfPageSize(
   pageNumber: number
 ): Promise<{ width: number; height: number } | null> {
   try {
+    const pdfjsLib = await getPdfjsLib();
     const fs = require('fs');
     const data = new Uint8Array(fs.readFileSync(pdfPath));
     const loadingTask = pdfjsLib.getDocument({ data });
@@ -113,9 +127,11 @@ export async function getPdfPageSize(
 async function extractImagesFromPage(
   page: any,
   pageNumber: number,
-  imagesDir: string
+  imagesDir: string,
+  pdfjsLib: any
 ): Promise<ExtractedImage[]> {
   const result: ExtractedImage[] = [];
+  const OPS = pdfjsLib.OPS;
 
   try {
     const opList = await page.getOperatorList();

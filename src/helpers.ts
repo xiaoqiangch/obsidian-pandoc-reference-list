@@ -1,5 +1,4 @@
 import { FileSystemAdapter, htmlToMarkdown } from 'obsidian';
-import { shellPath } from 'shell-path';
 import { PartialCSLEntry } from './bib/types';
 
 const os = require('os');
@@ -87,6 +86,10 @@ export async function fixPath() {
   }
 
   try {
+    // Lazily required: shell-path pulls in shell-env/execa, which is only
+    // needed (and only spawns a shell) when the PATH actually gets fixed.
+    const { shellPath } = require('shell-path');
+
     const path = await shellPath();
 
     process.env.PATH =

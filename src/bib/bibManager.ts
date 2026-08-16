@@ -1,5 +1,4 @@
 import { EditorView } from '@codemirror/view';
-import CSL from 'citeproc';
 import ReferenceList from '../main';
 import { PartialCSLEntry } from './types';
 import Fuse from 'fuse.js';
@@ -51,6 +50,17 @@ const fuseSettings = {
     { name: 'author.given', weight: 0.1 },
   ],
 };
+
+// citeproc is sizable and its module evaluation does real work; it is only
+// needed once a CSL engine is actually built, so load it lazily instead of at
+// plugin startup.
+let cslLib: any;
+function getCSL(): any {
+  if (!cslLib) {
+    cslLib = require('citeproc');
+  }
+  return cslLib;
+}
 
 interface ScopedSettings {
   style?: string;
@@ -151,12 +161,12 @@ function normalizeLocales(locales: string[]) {
   const obj: Record<string, boolean> = {};
   for (let locale of locales) {
     locale = locale.split('-').slice(0, 2).join('-');
-    if (CSL.LANGS[locale]) {
+    if (getCSL().LANGS[locale]) {
       obj[locale] = true;
     } else {
       locale = locale.split('-')[0];
-      if (CSL.LANG_BASES[locale]) {
-        locale = CSL.LANG_BASES[locale].split('_').join('-');
+      if (getCSL().LANG_BASES[locale]) {
+        locale = getCSL().LANG_BASES[locale].split('_').join('-');
         obj[locale] = true;
       }
     }
@@ -665,7 +675,7 @@ export class BibManager {
         'attempting to build citproc engine with empty CSL locale'
       );
     }
-    const engine = new CSL.Engine(
+    const engine = new (getCSL().Engine)(
       {
         retrieveLocale: (id: string) => {
           return langCache.get(id);
