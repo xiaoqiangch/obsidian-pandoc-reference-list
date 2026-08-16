@@ -47,16 +47,11 @@ const B = 0.75;
  * postings file previously inflated to >1GB of tagged `number[]` values +
  * per-array object overhead and caused renderer "JavaScript heap out of
  * memory" crashes (Obsidian renderer dies, DevTools disconnects).
- *
- * `docTerms` (docId -> term list, used by removeDoc) is built lazily so that
- * loading the search payload never duplicates every term reference again.
  */
 export class Bm25Index {
   documents = new Map<number, RagDocMeta>();
   postings = new Map<string, Int32Array>();
   docIdByPath = new Map<string, number>();
-  private docTerms = new Map<number, string[]>();
-  private docTermsBuilt = false;
   private totalTokens = 0;
   private nextId = 1;
 
@@ -108,7 +103,6 @@ export class Bm25Index {
 
     this.documents.set(id, meta);
     this.docIdByPath.set(path, id);
-    this.docTerms.set(id, Array.from(tf.keys()));
     this.totalTokens += totalTerms;
     return id;
   }
@@ -131,8 +125,10 @@ export class Bm25Index {
     const id = this.docIdByPath.get(path);
     if (id === undefined) return false;
 
-    this.ensureDocTerms();
-    const terms = this.docTerms.get(id) || [];
+    // Building a docId -> terms reverse map costs ~170MB of V8 heap for a
+    // large vault, so a rare delete finds the terms of one document with a
+    // single postings scan instead.
+    const terms = this.scanDocTerms(id);
     const meta = this.documents.get(id);
     for (const t of terms) {
       const arr = this.postings.get(t);
@@ -153,9 +149,22 @@ export class Bm25Index {
 
     this.documents.delete(id);
     this.docIdByPath.delete(path);
-    this.docTerms.delete(id);
     void meta;
     return true;
+  }
+
+  /** Find the terms a document appears in with a single pass over postings. */
+  private scanDocTerms(id: number): string[] {
+    const out: string[] = [];
+    for (const [t, arr] of this.postings) {
+      for (let i = 0; i < arr.length; i += 2) {
+        if (arr[i] === id) {
+          out.push(t);
+          break;
+        }
+      }
+    }
+    return out;
   }
 
   /**
@@ -338,8 +347,6 @@ export class Bm25Index {
     this.documents.clear();
     this.postings.clear();
     this.docIdByPath.clear();
-    this.docTerms.clear();
-    this.docTermsBuilt = false;
     this.totalTokens = data?.totalTokens || 0;
     this.nextId = 1;
     for (const doc of data?.docs || []) {
@@ -351,12 +358,9 @@ export class Bm25Index {
 
   /** Load the large search-time payload (binary from {@link serializeSearch})
    *  into a metadata-only index. Postings are kept as zero-copy Int32Array
-   *  views over the Buffer's ArrayBuffer — never duplicated into JS objects —
-   *  and docTerms is built lazily only when a document is actually removed. */
+   *  views over the Buffer's ArrayBuffer — never duplicated into JS objects. */
   loadSearch(buf: Buffer): void {
     this.postings.clear();
-    this.docTerms.clear();
-    this.docTermsBuilt = false;
     let o = 0;
     if (buf.length < 12) return;
     if (buf.toString('ascii', 0, 4) !== 'BM25') return;
@@ -397,33 +401,10 @@ export class Bm25Index {
     return this.postings.size > 0 || this.documents.size === 0;
   }
 
-  /**
-   * Build docTerms (docId -> term list) lazily on first removal. Loading the
-   * search payload skips this entirely — it would duplicate every term
-   * reference again (~170MB for this vault) just to support a rare delete.
-   */
-  private ensureDocTerms(): void {
-    if (this.docTermsBuilt) return;
-    this.docTermsBuilt = true;
-    for (const [t, arr] of this.postings) {
-      for (let i = 0; i < arr.length; i += 2) {
-        const docId = arr[i];
-        let list = this.docTerms.get(docId);
-        if (!list) {
-          list = [];
-          this.docTerms.set(docId, list);
-        }
-        list.push(t);
-      }
-    }
-  }
-
   load(data: Bm25Serialized): void {
     this.documents.clear();
     this.postings.clear();
     this.docIdByPath.clear();
-    this.docTerms.clear();
-    this.docTermsBuilt = false;
     this.totalTokens = data.totalTokens || 0;
     this.nextId = 1;
 

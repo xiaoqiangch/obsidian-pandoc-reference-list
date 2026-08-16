@@ -21,14 +21,12 @@ describe('Bm25Index binary postings format', () => {
     // Search works identically (topK caps results at 10)
     expect(idx2.search('数字经济', 50).length).toBe(50);
     expect(idx2.search('quantum', 50).length).toBe(50);
-    // Lazy docTerms: not built until a removal
-    expect((idx2 as any).docTermsBuilt).toBe(false);
     expect(idx2.search('research', 50).length).toBe(50);
 
-    // Removal still works after lazy build
+    // Removal still works (finds the doc's terms via a postings scan; the
+    // full reverse map is never materialized)
     idx2.removeDoc('note0.md');
     expect(idx2.search('quantum', 50).length).toBe(49);
-    expect((idx2 as any).docTermsBuilt).toBe(true);
   });
 
   test('binary format handles empty and single-doc index', () => {

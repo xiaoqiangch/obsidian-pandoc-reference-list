@@ -182,6 +182,23 @@ export class SemanticVectorIndex {
     return Buffer.from(flat.buffer, flat.byteOffset, flat.byteLength);
   }
 
+  /**
+   * Per-document vector chunks as Buffer views (no copying). Writing the
+   * payload this way avoids materializing a second full-size Int8Array +
+   * Buffer on the main thread during every cache save — for a multi-hundred-MB
+   * index that transient allocation was a memory spike on top of an already
+   * tight renderer budget.
+   */
+  vectorChunks(): Buffer[] {
+    const out: Buffer[] = [];
+    for (const [, d] of this.docs) {
+      out.push(
+        Buffer.from(d.vectors.buffer, d.vectors.byteOffset, d.vectors.byteLength)
+      );
+    }
+    return out;
+  }
+
   loadFrom(json: any, buffer: Buffer): void {
     this.docs.clear();
     this.dimension = json?.dimension || 0;

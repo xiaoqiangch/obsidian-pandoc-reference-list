@@ -88,7 +88,11 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   indexFollowSymlinks: true,
   indexExcludeFolders: ['node_modules', '.yarn', 'bower_components'],
   enableNativeSemantic: false,
-  semanticIndexLocation: 'vault',
+  // 'local' by default: the semantic vector payload can reach hundreds of MB,
+  // and writing it inside an iCloud-synced vault froze Obsidian (every cache
+  // save re-uploaded the whole file). The vault location remains available for
+  // small indexes that genuinely need cross-device sync.
+  semanticIndexLocation: 'local',
   semanticEmbedApiUrl: 'http://localhost:11434/v1',
   semanticEmbedApiKey: '',
   semanticEmbedModel: 'bge-m3',

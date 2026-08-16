@@ -715,7 +715,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       const idx = this.plugin.semanticIndexer;
       semanticStatus.descEl.empty();
       const total = idx.eligibleTotal > 0 ? idx.eligibleTotal : idx.countEligibleFiles();
-      const indexed = idx.index.docCount;
+      const indexed = idx.docCount;
       if (idx.building && idx.progress) {
         const p = idx.progress;
         const batchPct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
@@ -743,7 +743,7 @@ export class ReferenceListSettingsTab extends PluginSettingTab {
       } else {
         const overallPct = total > 0 ? Math.round((indexed / total) * 100) : 0;
         semanticStatus.descEl.createDiv({
-          text: `已索引 ${indexed} 个文件 / ${idx.index.chunkCount} 个分块${
+          text: `已索引 ${indexed} 个文件 / ${idx.chunkCount} 个分块${
             idx.enabled ? '' : '（语义检索未启用）'
           }${idx.failedCount > 0 ? `（上次构建跳过 ${idx.failedCount} 个失败文件）` : ''}。`,
         });

@@ -12,16 +12,21 @@ jest.mock('../embedding', () => {
 });
 
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
 import { SemanticIndexer, SemanticIndexerSettings } from '../semanticIndexer';
 import { isEmbeddingServiceAvailable } from '../embedding';
 
 const mockProbe = isEmbeddingServiceAvailable as jest.Mock;
 
 function makeApp(): any {
+  // Stable per-app vault root (same path on every getBasePath() call) so the
+  // cache-dir hash derived from it stays consistent within a test.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'bib-manager-test-'));
   return {
     vault: {
       adapter: {
-        getBasePath: () => os.tmpdir(),
+        getBasePath: () => base,
         exists: async () => false,
         read: async () => '',
         readBinary: async () => new ArrayBuffer(0),
@@ -224,5 +229,50 @@ describe('SemanticIndexer bounded auto runs', () => {
     await indexer.buildAll();
     expect(indexer.index.docCount).toBe(25);
     indexer.destroy();
+  });
+});
+
+describe('SemanticIndexer lazy vector loading', () => {
+  beforeEach(() => {
+    mockProbe.mockReset();
+    mockProbe.mockResolvedValue(true);
+  });
+
+  test('loadCache reads only the tiny meta sidecar; vectors load lazily on first use', async () => {
+    const app = makeApp();
+    // The indexer resolves its cache paths through the global `app` (same as
+    // inside Obsidian), so expose it for the disk round-trip.
+    (global as any).app = app;
+    try {
+      app.vault.getMarkdownFiles = () => [
+        { path: 'notes/a.md', stat: { mtime: Date.now(), size: 100 }, extension: 'md' },
+        { path: 'notes/b.md', stat: { mtime: Date.now(), size: 100 }, extension: 'md' },
+      ];
+      app.vault.cachedRead = async () => 'hello semantic index content';
+
+      // Build + persist a real index (writes json / vectors / meta sidecar).
+      const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+      await indexer.incrementalUpdate();
+      expect(indexer.docCount).toBe(2);
+      await indexer.flushCache();
+      indexer.destroy();
+
+      // A fresh instance must NOT pull the vector payload into memory at
+      // startup: pending counts / diffs come from the sidecar alone.
+      const indexer2 = new SemanticIndexer(app, 'literature', makeSettings());
+      const loaded = await indexer2.loadCache();
+      expect(loaded).toBe(true);
+      expect(indexer2.docCount).toBe(2);
+      expect(indexer2.chunkCount).toBeGreaterThan(0);
+      expect((indexer2 as any).vectorsLoaded).toBe(false);
+
+      // Semantic search loads the vectors on demand.
+      const hits = await indexer2.search('hello');
+      expect(Array.isArray(hits)).toBe(true);
+      expect((indexer2 as any).vectorsLoaded).toBe(true);
+      indexer2.destroy();
+    } finally {
+      delete (global as any).app;
+    }
   });
 });

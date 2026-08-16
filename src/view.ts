@@ -505,7 +505,7 @@ export class ReferenceListView extends ItemView {
 
     // Semantic (vector) candidates.
     const idx = this.plugin.semanticIndexer;
-    if (idx?.enabled && idx.index.chunkCount > 0) {
+    if (idx?.enabled && idx.chunkCount > 0) {
       let vecHits: SemanticVectorHit[] = [];
       try {
         vecHits = await idx.search(
@@ -701,7 +701,7 @@ export class ReferenceListView extends ItemView {
     seq?: number
   ) {
     const idx = this.plugin.semanticIndexer;
-    if (!idx || !idx.enabled || idx.index.chunkCount === 0) return;
+    if (!idx || !idx.enabled || idx.chunkCount === 0) return;
     if (seq !== undefined && seq !== this.renderSeq) return;
 
     let vecHits: SemanticVectorHit[];

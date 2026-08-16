@@ -24,7 +24,14 @@ import { DEFAULT_SETTINGS, ReferenceListSettings } from './settingsDefaults';
 import { LazySettingsTab } from './lazySettingsTab';
 import { TooltipManager } from './tooltip';
 import { ReferenceListView, viewType } from './view';
-import { PromiseCapability, fixPath, getVaultRoot, debugLog, isLocalApiUrl } from './helpers';
+import {
+  PromiseCapability,
+  fixPath,
+  getVaultRoot,
+  getCacheRoot,
+  debugLog,
+  isLocalApiUrl,
+} from './helpers';
 import path from 'path';
 import { BibManager } from './bib/bibManager';
 import { CiteSuggest } from './citeSuggest/citeSuggest';
@@ -632,14 +639,17 @@ export default class ReferenceList extends Plugin {
       this.semanticIndexer.ensureEmbeddingAvailable(),
       this.semanticIndexer.loadCache(),
     ]);
-    const loaded = this.semanticIndexer.index.docCount > 0;
+    // loadCache() only reads the tiny per-doc metadata sidecar; the vector
+    // payload (hundreds of MB) stays on disk until search or an embedding run
+    // actually needs it.
+    const loaded = this.semanticIndexer.docCount > 0;
     debugLog('Main', 'Embedding service availability', { available, loaded });
 
     if (!available) {
       if (loaded) {
-        new Notice('语义检索：本机无嵌入服务，已加载 iCloud 同步的语义索引（只读，不会重建/覆盖）。');
+        new Notice('语义检索：本机无嵌入服务，索引保持只读（不重建/不覆盖），待嵌入服务可用后可正常检索与更新。');
       } else {
-        new Notice('语义检索：本机无嵌入服务，且无可用同步索引，请在有嵌入服务的设备上构建后同步。');
+        new Notice('语义检索：本机无嵌入服务，且无可用索引，请在有嵌入服务的设备上构建。');
       }
       return;
     }
@@ -848,6 +858,55 @@ export default class ReferenceList extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     // NOTE: do not call syncIndexSettings() here — the indexers are created
     // in onload() *after* loadSettings(), so they do not exist yet.
+    await this.migrateSemanticIndexLocation();
+  }
+
+  /**
+   * One-time migration: move the semantic index out of the iCloud-synced vault
+   * into the vault-external cache dir. A multi-hundred-MB vector payload living
+   * inside the vault made every cache save re-upload the whole file through
+   * iCloud and churn Obsidian's file watcher — a direct contributor to the
+   * renderer freeze / crash. The move is a lossless rename; on failure the
+   * setting is left as 'vault' so nothing is half-migrated.
+   */
+  private async migrateSemanticIndexLocation(): Promise<void> {
+    if (this.settings.semanticIndexLocation !== 'vault') return;
+
+    let vaultRoot: string;
+    try {
+      vaultRoot = getVaultRoot();
+    } catch {
+      return;
+    }
+
+    const srcDir = path.join(vaultRoot, '.bib-manager');
+    const files = ['semantic-index.json', 'semantic-vectors.bin', 'semantic-meta.json'];
+    const present = files.filter((f) => fs.existsSync(path.join(srcDir, f)));
+    if (present.length === 0) {
+      // Nothing to move — flip the default to the crash-safe location.
+      this.settings.semanticIndexLocation = 'local';
+      this.saveSettings();
+      return;
+    }
+
+    const dstDir = getCacheRoot();
+    try {
+      if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+      for (const f of present) {
+        fs.renameSync(path.join(srcDir, f), path.join(dstDir, f));
+      }
+    } catch (e) {
+      debugLog('Main', 'Semantic index vault->local migration failed, keeping vault', {
+        error: (e as any)?.message,
+      });
+      return;
+    }
+
+    this.settings.semanticIndexLocation = 'local';
+    debugLog('Main', 'Semantic index migrated from vault to local cache', {
+      moved: present,
+    });
+    this.saveSettings();
   }
 
   /** Push the current indexing-related settings into the indexers so changes

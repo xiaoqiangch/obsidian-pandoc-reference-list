@@ -144,6 +144,24 @@ export class SemanticIndexer {
   /** Timestamp of the last probe, used to bound probe frequency. */
   private lastEmbeddingProbeAt = 0;
 
+  // ------------------------------------------------------------------
+  // Lazy vector loading
+  //
+  // The full vector payload (this vault: ~560MB) and its JSON metadata
+  // (~20MB -> ~100MB+ of V8 objects) used to be loaded into the renderer at
+  // startup and held forever, which — combined with the RAG cjkText heap and
+  // Obsidian's own memory — pushed the renderer past its heap budget and
+  // crashed it ("DevTools connection lost" after prolonged use).
+  //
+  // Now only a tiny per-document meta sidecar (path -> mtime/size/chunkCount)
+  // is read at startup; that is enough for accurate pending-count / diff
+  // logic. The vectors themselves are loaded exactly once, on first semantic
+  // search or when an incremental run actually has work to do.
+  // ------------------------------------------------------------------
+  private vectorsLoaded = false;
+  private vectorsLoadPromise: Promise<boolean> | null = null;
+  private metaMap = new Map<string, { mtime: number; size: number; chunks: number }>();
+
   constructor(app: App, outputPath: string, settings: SemanticIndexerSettings) {
     this.app = app;
     this.outputPath = outputPath;
@@ -176,7 +194,7 @@ export class SemanticIndexer {
   }
 
   /** Resolve the current cache file paths from the storage-location setting. */
-  private cachePaths(): { json: string; bin: string } {
+  private cachePaths(): { json: string; bin: string; meta: string } {
     const root =
       this.settings.indexLocation === 'vault'
         ? path.join(getVaultRoot(), '.bib-manager')
@@ -184,6 +202,7 @@ export class SemanticIndexer {
     return {
       json: path.join(root, 'semantic-index.json'),
       bin: path.join(root, 'semantic-vectors.bin'),
+      meta: path.join(root, 'semantic-meta.json'),
     };
   }
 
@@ -216,34 +235,152 @@ export class SemanticIndexer {
     };
   }
 
+  /**
+   * Load only the tiny per-document metadata sidecar (no vectors). Called at
+   * startup so pending-count / diff logic is accurate without pulling the
+   * multi-hundred-MB vector payload into the renderer. On the first run after
+   * an upgrade there is no sidecar yet — the full JSON is read once just to
+   * extract the per-doc metadata, then discarded (vectors stay unloaded).
+   */
   async loadCache(): Promise<boolean> {
     try {
-      const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
-      // Use Obsidian's vault adapter to read the index so iCloud on-demand
-      // files are fully downloaded before parsing — a direct fs.readFileSync
-      // can hit a not-yet-synced placeholder (ENOENT / truncated JSON).
+      const { json: cacheJsonPath, meta: metaPath } = this.cachePaths();
+      const metaRaw = await this.readVaultFile(metaPath);
+      if (metaRaw) {
+        try {
+          const parsed = JSON.parse(metaRaw);
+          if (parsed?.version === 1 && parsed.docs) {
+            this.metaMap = new Map(
+              Object.entries(parsed.docs) as [
+                string,
+                { mtime: number; size: number; chunks: number }
+              ][]
+            );
+            this.index.model = parsed.model || '';
+            this.vectorsLoaded = false;
+            debugLog('SemanticIndexer', 'Meta sidecar loaded', {
+              docs: this.metaMap.size,
+            });
+            return this.metaMap.size > 0;
+          }
+        } catch (e) {
+          debugLog('SemanticIndexer', 'Failed to parse meta sidecar', { error: e });
+        }
+      }
+
+      // Upgrade path: no sidecar yet. Read the full JSON once, keep only the
+      // per-doc metadata, and persist it as the sidecar for next startup.
       const rawText = await this.readVaultFile(cacheJsonPath);
       if (rawText == null) return false;
       const raw = JSON.parse(rawText);
       if (!raw || raw.version !== CACHE_VERSION) return false;
-      // A different embedding model produces vectors with a different
-      // dimensionality; mixing them would yield garbage search results, so
-      // treat a model change as cache-invalid and force a rebuild.
       if (raw.model && this.settings.model && raw.model !== this.settings.model) return false;
-      this.index.model = raw.model || '';
+      const docs: Record<string, { mtime: number; size: number; chunks: number }> = {};
+      for (const d of raw.docs || []) {
+        if (d?.path) {
+          docs[d.path] = { mtime: d.mtime, size: d.size, chunks: d.chunks?.length ?? 0 };
+        }
+      }
+      this.metaMap = new Map(Object.entries(docs));
+      this.vectorsLoaded = false;
+      void this.writeMetaSnapshot();
+      debugLog('SemanticIndexer', 'Meta extracted from full JSON (upgrade)', {
+        docs: this.metaMap.size,
+      });
+      return this.metaMap.size > 0;
+    } catch (e) {
+      debugLog('SemanticIndexer', 'Failed to load meta cache', { error: e });
+      return false;
+    }
+  }
+
+  /** Number of indexed documents (meta sidecar when vectors are not loaded). */
+  get docCount(): number {
+    return this.vectorsLoaded ? this.index.docCount : this.metaMap.size;
+  }
+
+  /** Number of indexed chunks (meta sidecar when vectors are not loaded). */
+  get chunkCount(): number {
+    if (this.vectorsLoaded) return this.index.chunkCount;
+    let n = 0;
+    for (const m of this.metaMap.values()) n += m.chunks;
+    return n;
+  }
+
+  /**
+   * Load the full vector payload + JSON metadata into memory exactly once.
+   * Returns true when an index was actually loaded. Search and embedding runs
+   * call this lazily; routine startup / pending-counting never does.
+   */
+  ensureVectorsLoaded(): Promise<boolean> {
+    if (this.vectorsLoaded) return Promise.resolve(true);
+    if (this.vectorsLoadPromise) return this.vectorsLoadPromise;
+    this.vectorsLoadPromise = this.doLoadVectors();
+    this.vectorsLoadPromise.catch(() => {
+      this.vectorsLoadPromise = null;
+    });
+    return this.vectorsLoadPromise;
+  }
+
+  private async doLoadVectors(): Promise<boolean> {
+    try {
+      const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
+      const rawText = await this.readVaultFile(cacheJsonPath);
+      if (rawText == null) return false;
+      const raw = JSON.parse(rawText);
+      if (!raw || raw.version !== CACHE_VERSION) return false;
+      if (raw.model && this.settings.model && raw.model !== this.settings.model) return false;
       const bin = await this.readVaultBinary(cacheBinPath);
       if (bin == null) return false;
       this.index.loadFrom(raw, bin);
-      debugLog('SemanticIndexer', 'Cache loaded', {
+      this.index.model = raw.model || '';
+      this.vectorsLoaded = true;
+      this.refreshMetaFromIndex();
+      debugLog('SemanticIndexer', 'Vectors loaded', {
         docs: this.index.docCount,
         chunks: this.index.chunkCount,
         dim: this.index.dim,
       });
       return this.index.docCount > 0;
     } catch (e) {
-      debugLog('SemanticIndexer', 'Failed to load cache', { error: e });
+      debugLog('SemanticIndexer', 'Failed to load vectors', { error: e });
       return false;
     }
+  }
+
+  private refreshMetaFromIndex(): void {
+    this.metaMap = new Map();
+    for (const p of this.index.docKeys()) {
+      const m = this.index.getMeta(p);
+      if (m) {
+        this.metaMap.set(p, { mtime: m.mtime, size: m.size, chunks: m.chunks.length });
+      }
+    }
+  }
+
+  private async writeMetaSnapshot(): Promise<void> {
+    try {
+      const { meta: metaPath } = this.cachePaths();
+      const dir = path.dirname(metaPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const payload: { version: number; model: string; docs: Record<string, unknown> } = {
+        version: 1,
+        model: this.settings.model || '',
+        docs: Object.fromEntries(this.metaMap),
+      };
+      await fs.promises.writeFile(metaPath, JSON.stringify(payload), 'utf-8');
+    } catch (e) {
+      debugLog('SemanticIndexer', 'Failed to write meta sidecar', { error: e });
+    }
+  }
+
+  private getDocMeta(path: string): { mtime: number; size: number } | null {
+    if (this.vectorsLoaded) return this.index.getMeta(path);
+    return this.metaMap.get(path) ?? null;
+  }
+
+  docKeys(): string[] {
+    return this.vectorsLoaded ? this.index.docKeys() : Array.from(this.metaMap.keys());
   }
 
   /** Read a vault file through Obsidian's adapter (iCloud-aware), falling back
@@ -329,15 +466,20 @@ export class SemanticIndexer {
       const { json: cacheJsonPath, bin: cacheBinPath } = this.cachePaths();
       const dir = path.dirname(cacheJsonPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      // The in-memory index is the source of truth once vectors are loaded;
+      // refresh the meta snapshot so startup never has to read the 20MB JSON.
+      if (this.vectorsLoaded) this.refreshMetaFromIndex();
       const json = this.index.toJSON();
       json.version = CACHE_VERSION;
-      const bin = this.index.toVectorBuffer();
+      const jsonStr = JSON.stringify(json);
       // Serialization (in-memory) is unavoidable on the main thread, but the
       // disk write of the multi-hundred-MB payload is moved off-thread so the
-      // renderer never blocks on disk I/O into an iCloud-synced folder.
+      // renderer never blocks on disk I/O into an iCloud-synced folder. Vectors
+      // are streamed chunk-by-chunk (no second full-size buffer allocation).
       await Promise.all([
-        fs.promises.writeFile(cacheJsonPath, JSON.stringify(json), 'utf-8'),
-        fs.promises.writeFile(cacheBinPath, bin),
+        fs.promises.writeFile(cacheJsonPath, jsonStr, 'utf-8'),
+        this.writeVectorsFile(cacheBinPath),
+        this.writeMetaSnapshot(),
       ]);
       this.lastCacheWriteAt = Date.now();
       debugLog('SemanticIndexer', 'Cache saved', {
@@ -347,6 +489,27 @@ export class SemanticIndexer {
     } catch (e) {
       debugLog('SemanticIndexer', 'Failed to save cache', { error: e });
     }
+  }
+
+  /** Stream the concatenated chunk vectors to disk with backpressure. */
+  private writeVectorsFile(filePath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const chunks = this.index.vectorChunks();
+      const stream = fs.createWriteStream(filePath);
+      stream.on('error', reject);
+      stream.on('finish', resolve);
+      let i = 0;
+      const writeNext = (): void => {
+        while (i < chunks.length) {
+          if (!stream.write(chunks[i++])) {
+            stream.once('drain', writeNext);
+            return;
+          }
+        }
+        stream.end();
+      };
+      writeNext();
+    });
   }
 
   /** Rebuild the semantic index from scratch for all eligible markdown files. */
@@ -374,6 +537,9 @@ export class SemanticIndexer {
         .filter((f) => shouldIndexPath(f.path, undefined, this.indexOptions()));
       this.index = new SemanticVectorIndex();
       this.index.model = this.settings.model;
+      // A fresh in-memory index is authoritative; never let a stale on-disk
+      // copy overwrite it via ensureVectorsLoaded() during this run.
+      this.vectorsLoaded = true;
       this.failedCount = 0;
       const targets = files.slice().sort((a, b) => (a.stat.size || 0) - (b.stat.size || 0));
 
@@ -392,6 +558,7 @@ export class SemanticIndexer {
         },
       });
 
+      this.refreshMetaFromIndex();
       this.scheduleSave();
       await this.flushCache();
       debugLog('SemanticIndexer', 'Full build finished', { files: files.length });
@@ -423,16 +590,19 @@ export class SemanticIndexer {
       const current = new Set<string>();
       for (const f of files) current.add(f.path);
 
+      // Diff against the per-doc metadata (cheap sidecar when the vectors are
+      // not loaded) so a routine run with nothing to do never loads the
+      // multi-hundred-MB vector payload into the renderer.
       // Removed files
-      let removed = 0;
-      for (const docPath of Array.from(this.index.docKeys())) {
-        if (!current.has(docPath) && this.index.removeDoc(docPath)) removed++;
+      const removedPaths: string[] = [];
+      for (const docPath of this.docKeys()) {
+        if (!current.has(docPath)) removedPaths.push(docPath);
       }
 
       // Added / changed files
       const changed: TFile[] = [];
       for (const f of files) {
-        const meta = this.index.getMeta(f.path);
+        const meta = this.getDocMeta(f.path);
         if (docChanged(meta, f.stat)) {
           changed.push(f);
         }
@@ -486,6 +656,21 @@ export class SemanticIndexer {
         this.scheduleFollowUp(MIN_AUTO_RUN_INTERVAL_MS);
       }
 
+      if (removedPaths.length === 0 && targets.length === 0) {
+        debugLog('SemanticIndexer', 'incrementalUpdate: nothing to do (no vector load)');
+        return;
+      }
+
+      // Mutations need the real index (in-memory vectors): load it once.
+      await this.ensureVectorsLoaded();
+      // After this point `this.index` is the in-memory source of truth (it was
+      // loaded from disk, or we are about to build it fresh into memory).
+      this.vectorsLoaded = true;
+      let removed = 0;
+      for (const docPath of removedPaths) {
+        if (this.index.removeDoc(docPath)) removed++;
+      }
+
       this.failedCount = 0;
       let indexed = 0;
       // Manual runs over a large pending backlog embed concurrently on the GPU;
@@ -519,12 +704,8 @@ export class SemanticIndexer {
         },
       });
 
-      // Persist only when the index actually changed. The previous condition
-      // (targets.length > 0 || current.size !== docCount) was true on every
-      // auto run while any backlog existed — even runs that embedded nothing —
-      // so the full index was rewritten (and re-synced) every interval without
-      // any visible size change.
       if (indexed > 0 || removed > 0) {
+        this.refreshMetaFromIndex();
         this.scheduleSave();
       }
       if (!opts?.auto) await this.flushCache();
@@ -589,7 +770,7 @@ export class SemanticIndexer {
     for (const f of files) {
       if (!shouldIndexPath(f.path, undefined, this.indexOptions())) continue;
       total++;
-      if (modelMismatch || docChanged(this.index.getMeta(f.path), f.stat)) pending++;
+      if (modelMismatch || docChanged(this.getDocMeta(f.path), f.stat)) pending++;
     }
     this.pendingCount = pending;
     // Denominator for the overall-progress display in the settings panel.
@@ -723,7 +904,7 @@ export class SemanticIndexer {
 
   /** Embed the query (cached) and return the top chunk hits. */
   async search(query: string, topK?: number, minSimilarity?: number): Promise<SemanticVectorHit[]> {
-    if (!this.enabled || this.index.chunkCount === 0) return [];
+    if (!this.enabled || this.chunkCount === 0) return [];
     // An empty/undefined query would be sent to the embedding API as a
     // `[null]` input and rejected with HTTP 400.
     if (!query || !query.trim()) return [];
@@ -731,6 +912,10 @@ export class SemanticIndexer {
     // search is unavailable on this machine (index may still be loaded from
     // iCloud for inspection, but query embedding requires the service).
     if (!(await this.ensureEmbeddingAvailable())) return [];
+    // The vectors are only pulled into the renderer when search is actually
+    // used (the startup path never touches them).
+    const loaded = await this.ensureVectorsLoaded();
+    if (!loaded) return [];
     const k = topK ?? this.settings.topK ?? 20;
     const min = minSimilarity ?? 0;
 
@@ -742,10 +927,6 @@ export class SemanticIndexer {
       this.lastQueryCache = { q: query, vec: qVec };
     }
     return this.index.search(qVec, k, min);
-  }
-
-  docKeys(): string[] {
-    return Array.from(this.index.docKeys());
   }
 
   destroy(): void {
