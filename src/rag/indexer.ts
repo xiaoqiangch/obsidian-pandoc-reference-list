@@ -8,11 +8,13 @@ const path = require('path');
 const EXCLUDE_DIR_RE = /(^|\/)(\.trash|\.obsidian|\.git|\.openclaw|_bib-links)(\/|$)/;
 /** Folder names excluded from indexing by default (user-configurable). */
 export const DEFAULT_EXCLUDE_FOLDERS = ['node_modules', '.yarn', 'bower_components'];
-// v3 splits the cache into a small metadata file (rag-index.json, loaded at
-// startup) and a large search payload (rag-postings.json, loaded lazily on the
-// first search / first index mutation). v2 was a single ~300MB JSON whose
-// synchronous parse froze startup for seconds.
-const CACHE_VERSION = 3;
+// v4 stores the search payload as a compact binary file (rag-postings.bin):
+// postings are raw int32 typed arrays loaded as zero-copy Int32Array views,
+// so the renderer never materializes the multi-hundred-MB JSON object graph.
+// v3 was a 515MB JSON whose `JSON.parse` inflated to >1GB of V8 heap objects
+// and crashed the renderer with "JavaScript heap out of memory" (the DevTools
+// "connection lost" symptom).
+const CACHE_VERSION = 4;
 const IDLE_BATCH = 40;
 // iCloud / APFS on-demand materialization can briefly shift a file's mtime
 // without the content changing; a small tolerance avoids spurious re-indexes.
@@ -153,7 +155,7 @@ export class RagIndexer {
     this.opts = opts;
     const root = getCacheRoot();
     this.cachePath = path.join(root, 'rag-index.json');
-    this.searchPath = path.join(root, 'rag-postings.json');
+    this.searchPath = path.join(root, 'rag-postings.bin');
   }
 
   /** Apply indexing-option changes without recreating the indexer. */
@@ -214,7 +216,8 @@ export class RagIndexer {
   /**
    * Load the large search payload (postings + cjkText) exactly once. Called
    * lazily from search() and incrementalUpdate(); the first call reads and
-   * parses the multi-hundred-MB file, subsequent calls are no-ops.
+   * maps the multi-hundred-MB binary file as typed-array views (no JSON.parse
+   * of the object graph), subsequent calls are no-ops.
    */
   ensureSearchReady(): Promise<void> {
     if (this.searchLoaded) return Promise.resolve();
@@ -222,10 +225,8 @@ export class RagIndexer {
     this.searchLoadPromise = (async () => {
       try {
         if (fs.existsSync(this.searchPath)) {
-          const raw = JSON.parse(await fs.promises.readFile(this.searchPath, 'utf-8'));
-          if (raw?.version === CACHE_VERSION) {
-            this.index.loadSearch(raw.index);
-          }
+          const raw = await fs.promises.readFile(this.searchPath);
+          this.index.loadSearch(raw);
         }
         this.searchLoaded = true;
       } catch (e) {
@@ -254,11 +255,7 @@ export class RagIndexer {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const meta = { version: CACHE_VERSION, index: this.index.serializeMeta() };
       fs.writeFileSync(this.cachePath, JSON.stringify(meta), 'utf-8');
-      const search = {
-        version: CACHE_VERSION,
-        index: this.index.serializeSearch(),
-      };
-      fs.writeFileSync(this.searchPath, JSON.stringify(search), 'utf-8');
+      fs.writeFileSync(this.searchPath, this.index.serializeSearch());
       this.searchLoaded = true;
       debugLog('RagIndexer', 'Cache saved', { docs: this.index.docCount });
     } catch (e) {
