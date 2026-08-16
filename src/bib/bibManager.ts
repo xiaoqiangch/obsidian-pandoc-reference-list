@@ -245,6 +245,11 @@ export class BibManager {
         this.bibCache.clear();
         this.doiToKey.clear();
         this.titleToKey.clear();
+        // A full reload must also drop the lazily-cached Zotero links, otherwise
+        // attachments added in Zotero since the last fetch would never show up
+        // (getZLinksForKeys skips keys already present in zCitekeyToLinks).
+        this.zCitekeyToLinks.clear();
+        this.zCitekeyToAttachmentLinks.clear();
       }
 
       try {
@@ -616,6 +621,11 @@ export class BibManager {
         for (const [k, v] of res.modified.entries()) {
           modifiedEntries.set(k, v);
           this.bibCache.set(k, v);
+          // The item was modified in Zotero (e.g. a new attachment was added):
+          // drop the cached links so the next render re-fetches fresh
+          // attachment paths from Zotero instead of serving the stale ones.
+          this.zCitekeyToLinks.delete(k);
+          this.zCitekeyToAttachmentLinks.delete(k);
           if (v.doi) {
             this.doiToKey.set(v.doi.trim().toLowerCase(), k);
           }
@@ -630,6 +640,8 @@ export class BibManager {
     }
 
     this.plugin.saveSettings();
+    if (modifiedEntries.size === 0) return;
+
     this.updateFuse(modifiedEntries);
     this.fileCache.clear();
     this.plugin.processReferences();

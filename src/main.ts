@@ -147,6 +147,26 @@ export default class ReferenceList extends Plugin {
       editorTooltipHandler(this.tooltipManager),
     ]);
 
+    // Periodically poll Zotero so items modified there (new attachments,
+    // edited metadata, new entries) show up in the plugin without requiring a
+    // manual refresh. refreshGlobalZBib() is cheap when nothing changed and
+    // only re-renders the panel when actual modifications were detected.
+    const zoteroInterval = (this.settings.zoteroRefreshInterval ?? 30) * 1000;
+    if (zoteroInterval > 0) {
+      this.registerInterval(
+        window.setInterval(() => {
+          if (!this.settings.pullFromZotero) return;
+          this.bibManager
+            .refreshGlobalZBib()
+            .catch((e) => {
+              debugLog('Main', 'periodic Zotero refresh failed', {
+                error: (e as any)?.message,
+              });
+            });
+        }, zoteroInterval)
+      );
+    }
+
     // No need to block execution
     fixPath().then(async () => {
       if (!this.settings.pathToPandoc) {

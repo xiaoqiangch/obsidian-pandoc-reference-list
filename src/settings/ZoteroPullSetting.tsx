@@ -110,6 +110,27 @@ export function ZoteroPullSetting({ plugin }: { plugin: ReferenceList }) {
               />
             </SettingItem>
           </div>
+          <div className="pwc-setting-item setting-item">
+            <SettingItem
+              name={t('Auto-refresh interval (seconds)')}
+              description={t(
+                'How often the plugin checks Zotero for changes (new items, edited metadata, newly added attachments). Set to 0 to disable auto-refresh.'
+              )}
+            >
+              <input
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  plugin.settings.zoteroRefreshInterval =
+                    Number.isFinite(v) && v >= 0 ? v : 30;
+                  plugin.saveSettings();
+                }}
+                type="number"
+                min={0}
+                spellCheck={false}
+                defaultValue={plugin.settings.zoteroRefreshInterval ?? 30}
+              />
+            </SettingItem>
+          </div>
           <div className="setting-item pwc-setting-item-wrapper">
             <SettingItem name={t('Libraries to include in bibliography')} />
             {possibleGroups.map((g) => {

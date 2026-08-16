@@ -30,6 +30,7 @@ export const DEFAULT_SETTINGS: ReferenceListSettings = {
   pathToPandoc: '',
   tooltipDelay: 400,
   zoteroGroups: [],
+  zoteroRefreshInterval: 30,
   renderCitations: true,
   renderCitationsReadingMode: true,
   renderLinkCitations: true,
@@ -86,6 +87,9 @@ export interface ReferenceListSettings {
   pullFromZotero?: boolean;
   zoteroPort?: string;
   zoteroGroups: ZoteroGroup[];
+  /** Seconds between automatic Zotero polls (0 disables). New entries and
+   *  newly added attachments are picked up on the next poll. */
+  zoteroRefreshInterval?: number;
 
   deepseekApiUrl: string;
   deepseekApiKey: string;
