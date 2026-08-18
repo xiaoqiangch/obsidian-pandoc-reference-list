@@ -6,8 +6,10 @@ import { DEFAULT_ZOTERO_PORT, getZUserGroups } from 'src/bib/helpers';
 
 function validateGroups(
   plugin: ReferenceList,
-  groups: Array<{ id: number; name: string }>
+  groups: Array<{ id: number; name: string }> | null
 ) {
+  if (!Array.isArray(groups)) return;
+
   const validated: Array<{ id: number; name: string }> = [];
 
   plugin.settings.zoteroGroups.forEach((g) => {
@@ -21,15 +23,16 @@ function validateGroups(
 }
 
 export function ZoteroPullSetting({ plugin }: { plugin: ReferenceList }) {
+  const savedGroups = Array.isArray(plugin.settings.zoteroGroups)
+    ? plugin.settings.zoteroGroups
+    : [];
   const [isEnabled, setIsEnabled] = React.useState(
     !!plugin.settings.pullFromZotero
   );
-  const [possibleGroups, setPossibleGroups] = React.useState(
-    plugin.settings.zoteroGroups
-  );
-  const [activeGroups, setActiveGroups] = React.useState(
-    plugin.settings.zoteroGroups
-  );
+  const [possibleGroups, setPossibleGroups] =
+    React.useState<Array<{ id: number; name: string }>>(savedGroups);
+  const [activeGroups, setActiveGroups] =
+    React.useState<Array<{ id: number; name: string }>>(savedGroups);
   const [connected, setConnected] = React.useState(false);
 
   const pullUserGroups = React.useCallback(async () => {
@@ -38,10 +41,11 @@ export function ZoteroPullSetting({ plugin }: { plugin: ReferenceList }) {
         plugin.settings.zoteroPort ?? DEFAULT_ZOTERO_PORT
       );
       validateGroups(plugin, groups);
-      setPossibleGroups(groups);
-      setConnected(true);
+      setPossibleGroups(Array.isArray(groups) ? groups : []);
+      setConnected(Array.isArray(groups));
     } catch {
       setConnected(false);
+      setPossibleGroups([]);
     }
   }, []);
 

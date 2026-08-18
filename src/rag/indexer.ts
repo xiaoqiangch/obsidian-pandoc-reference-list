@@ -14,7 +14,15 @@ export const DEFAULT_EXCLUDE_FOLDERS = ['node_modules', '.yarn', 'bower_componen
 // v3 was a 515MB JSON whose `JSON.parse` inflated to >1GB of V8 heap objects
 // and crashed the renderer with "JavaScript heap out of memory" (the DevTools
 // "connection lost" symptom).
-const CACHE_VERSION = 4;
+// v5 fixes a cache-corruption bug: writeCache() could serialize a search
+// payload whose cjkText was missing for most documents (when the search
+// payload was never loaded into memory before a save, e.g. after a startup
+// where nothing changed), silently wiping the Chinese-phrase matching data.
+// The corrupted binary made whole-phrase CJK search return nothing for nearly
+// every document even though the index looked fine. Bumping the version forces
+// a clean rebuild; writeCache() below now refuses to save an incomplete
+// payload so the corruption cannot recur.
+const CACHE_VERSION = 5;
 const IDLE_BATCH = 40;
 // iCloud / APFS on-demand materialization can briefly shift a file's mtime
 // without the content changing; a small tolerance avoids spurious re-indexes.
@@ -255,7 +263,17 @@ export class RagIndexer {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const meta = { version: CACHE_VERSION, index: this.index.serializeMeta() };
       fs.writeFileSync(this.cachePath, JSON.stringify(meta), 'utf-8');
-      fs.writeFileSync(this.searchPath, this.index.serializeSearch());
+      // Only persist the search payload when postings are actually in memory.
+      // After a meta-only load (loadCache v4+ path sets searchLoaded=false),
+      // this.index holds documents WITHOUT cjkText; serializing it would
+      // overwrite a good rag-postings.bin with a payload missing cjkText for
+      // every meta-loaded doc, permanently breaking Chinese whole-phrase
+      // search. Keep the previous binary untouched in that case.
+      if (this.index.postings.size > 0) {
+        fs.writeFileSync(this.searchPath, this.index.serializeSearch());
+      } else {
+        debugLog('RagIndexer', 'Cache save: search payload not loaded, keeping existing postings');
+      }
       this.searchLoaded = true;
       debugLog('RagIndexer', 'Cache saved', { docs: this.index.docCount });
     } catch (e) {

@@ -8,7 +8,17 @@ let pdfjsLibPromise: Promise<any> | null = null;
 function getPdfjsLib(): Promise<any> {
   if (!pdfjsLibPromise) {
     pdfjsLibPromise = Promise.resolve().then(() => {
+      // The pdf.js UMD build assigns itself to globalThis.pdfjsLib, which
+      // would clobber Obsidian's built-in PDF.js and break its PDF viewer
+      // (API/worker version mismatch). Restore the previous global value.
+      const g = globalThis as any;
+      const prevPdfjsLib = g.pdfjsLib;
       const lib = require('pdfjs-dist/legacy/build/pdf.js');
+      if (prevPdfjsLib === undefined) {
+        delete g.pdfjsLib;
+      } else {
+        g.pdfjsLib = prevPdfjsLib;
+      }
       try {
         lib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${lib.version}/pdf.worker.min.js`;
       } catch (e) {
