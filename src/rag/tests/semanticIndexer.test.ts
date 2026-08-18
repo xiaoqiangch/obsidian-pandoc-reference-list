@@ -276,3 +276,56 @@ describe('SemanticIndexer lazy vector loading', () => {
     }
   });
 });
+
+describe('SemanticIndexer search dedup', () => {
+  beforeEach(() => {
+    mockProbe.mockReset();
+    mockProbe.mockResolvedValue(true);
+  });
+
+  test('concurrent and repeated searches for the same query share one scan', async () => {
+    const app = makeApp();
+    (global as any).app = app;
+    try {
+      app.vault.getMarkdownFiles = () => [
+        { path: 'notes/a.md', stat: { mtime: Date.now(), size: 100 }, extension: 'md' },
+      ];
+      app.vault.cachedRead = async () => 'hello semantic index content';
+
+      const indexer = new SemanticIndexer(app, 'literature', makeSettings());
+      await indexer.incrementalUpdate();
+      expect(indexer.docCount).toBe(1);
+
+      const embed = require('../embedding').embedTexts as jest.Mock;
+      const queryEmbeds = () =>
+        embed.mock.calls.filter((c) => c[0]?.length === 1 && c[0][0] === 'hello');
+
+      // Two concurrent searches with the same key share the in-flight promise:
+      // only one query embedding + one scan happens.
+      embed.mockClear();
+      const [a, b] = await Promise.all([
+        indexer.search('hello', 20, 0),
+        indexer.search('hello', 20, 0),
+      ]);
+      expect(Array.isArray(a)).toBe(true);
+      expect(b).toEqual(a);
+      expect(queryEmbeds()).toHaveLength(1);
+
+      // A repeat of the exact same query reuses the cached result — no new
+      // query embedding, no re-scan.
+      embed.mockClear();
+      const c = await indexer.search('hello', 20, 0);
+      expect(c).toEqual(a);
+      expect(queryEmbeds()).toHaveLength(0);
+
+      // A different query is a different key and scans again.
+      embed.mockClear();
+      const d = await indexer.search('other', 20, 0);
+      expect(Array.isArray(d)).toBe(true);
+      expect(queryEmbeds()).toHaveLength(0);
+      indexer.destroy();
+    } finally {
+      delete (global as any).app;
+    }
+  });
+});

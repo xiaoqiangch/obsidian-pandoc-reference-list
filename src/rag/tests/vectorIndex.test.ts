@@ -6,6 +6,19 @@ function unit(dim: number, hot: number): number[] {
   return v;
 }
 
+/**
+ * Vector aligned with the query (hot dim 0) with strength `alpha`, plus a
+ * fixed second component of 1. After normalize + int8 quantization the hot
+ * component is round(127*alpha/sqrt(alpha^2+1)), which is strictly increasing
+ * and unsaturated for alpha in [0, 2] — so chunk scores are distinguishable.
+ */
+function unitAlpha(dim: number, alpha: number): number[] {
+  const v = new Array(dim).fill(0);
+  v[0] = alpha;
+  v[1] = 1;
+  return v;
+}
+
 describe('SemanticVectorIndex', () => {
   test('ranks chunks by cosine similarity', () => {
     const idx = new SemanticVectorIndex();
@@ -131,5 +144,57 @@ describe('SemanticVectorIndex', () => {
     // normalized unit vector [0.6, 0.8, 0] -> int8
     expect(q[0]).toBe(76);
     expect(q[1]).toBe(102);
+  });
+
+  test('bounded top-K keeps only the globally best chunks, in order', () => {
+    const idx = new SemanticVectorIndex();
+    // 10 docs × 4 chunks = 40 chunks; chunk n has alpha = 0.05*(n+1) (1..40 →
+    // 0.05..2.0), so chunk 40 is the most aligned with the query [1,0,...].
+    let n = 0;
+    for (let d = 0; d < 10; d++) {
+      const path = `doc${d}.md`;
+      const chunks: { startLine: number; endLine: number; text: string }[] = [];
+      const vectors: number[][] = [];
+      for (let c = 0; c < 4; c++) {
+        chunks.push({ startLine: n + 1, endLine: n + 1, text: `chunk ${n}` });
+        vectors.push(unitAlpha(16, 0.05 * (n + 1)));
+        n++;
+      }
+      idx.upsertDoc(path, `Doc ${d}`, false, undefined, 1, 10, chunks, vectors);
+    }
+    expect(idx.chunkCount).toBe(40);
+
+    // topK=6: the six highest-alpha chunks (startLines 35..40).
+    const hits = idx.search(unit(16, 0), 6);
+    expect(hits).toHaveLength(6);
+    expect(hits.map((h) => h.startLine).sort((a, b) => b - a)).toEqual([40, 39, 38, 37, 36, 35]);
+    expect(hits[0].startLine).toBe(40);
+    expect(hits[5].startLine).toBe(35);
+    expect(hits[0].similarity).toBeGreaterThan(hits[5].similarity);
+  });
+
+  test('bounded top-K respects minSimilarity and returns all when chunkCount <= topK', () => {
+    const idx = new SemanticVectorIndex();
+    for (let i = 0; i < 3; i++) {
+      const alpha = i === 2 ? 4 : 0.01; // doc2 strongly aligned, doc0/1 weak
+      idx.upsertDoc(
+        `doc${i}.md`,
+        `Doc ${i}`,
+        false,
+        undefined,
+        1,
+        10,
+        [{ startLine: i + 1, endLine: i + 1, text: 'x' }],
+        [unitAlpha(16, alpha)]
+      );
+    }
+    // Strict threshold keeps only the strongly-aligned chunk.
+    const strict = idx.search(unit(16, 0), 10, 0.5);
+    expect(strict).toHaveLength(1);
+    expect(strict[0].path).toBe('doc2.md');
+
+    // topK larger than chunkCount: everything that clears the threshold.
+    const all = idx.search(unit(16, 0), 10);
+    expect(all).toHaveLength(3);
   });
 });

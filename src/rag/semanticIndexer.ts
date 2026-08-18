@@ -132,6 +132,12 @@ export class SemanticIndexer {
   /** Timestamp of the last actual cache write, used to throttle background saves. */
   private lastCacheWriteAt = 0;
   private lastQueryCache: { q: string; vec: number[] } | null = null;
+  /** In-flight semantic searches keyed by query|topK|min, so duplicate calls
+   *  in the same tick share one scan (see {@link search}). */
+  private searchInflight = new Map<string, Promise<SemanticVectorHit[]>>();
+  /** Last completed search result keyed the same way; a repeat of the exact
+   *  same query returns it without re-scanning 570k chunks. */
+  private lastHitsCache: { key: string; hits: SemanticVectorHit[] } | null = null;
   /**
    * Whether the embedding service is reachable on this machine. When false the
    * index is treated as read-only (loaded from the iCloud-synced copy) and
@@ -416,7 +422,12 @@ export class SemanticIndexer {
         }
       }
     }
-    return fs.existsSync(absPath) ? fs.readFileSync(absPath) : null;
+    // The local-cache fallback must use the async API: this payload is
+    // hundreds of MB (semantic-vectors.bin), and a synchronous readFileSync
+    // here blocked the renderer main thread for seconds on the first search,
+    // which together with the following JSON.parse + scan pushed the renderer
+    // into a V8 heap OOM ("DevTools connection lost").
+    return fs.existsSync(absPath) ? await fs.promises.readFile(absPath) : null;
   }
 
   private toVaultRelative(absPath: string): string | null {
@@ -908,6 +919,36 @@ export class SemanticIndexer {
     // An empty/undefined query would be sent to the embedding API as a
     // `[null]` input and rejected with HTTP 400.
     if (!query || !query.trim()) return [];
+    const k = topK ?? this.settings.topK ?? 20;
+    const min = minSimilarity ?? 0;
+    const key = `${query}\u0000${k}\u0000${min}`;
+
+    // One full scan per query, no matter how many call sites / render cycles
+    // ask for it in the same tick: a keystroke triggers both the semantic
+    // group and the rerank candidate search, and stale debounced cycles can
+    // still be in flight when a new one starts. Without this, the 570k-chunk
+    // dot-product scan ran 2-4 times per keystroke on the renderer main
+    // thread — a direct contributor to the UI freeze + OOM crash.
+    if (this.lastHitsCache && this.lastHitsCache.key === key) {
+      return this.lastHitsCache.hits;
+    }
+    const inflight = this.searchInflight.get(key);
+    if (inflight) return inflight;
+
+    const promise = this.doSearch(query, k, min).then((hits) => {
+      this.searchInflight.delete(key);
+      this.lastHitsCache = { key, hits };
+      return hits;
+    });
+    this.searchInflight.set(key, promise);
+    return promise;
+  }
+
+  private async doSearch(
+    query: string,
+    topK: number,
+    minSimilarity: number
+  ): Promise<SemanticVectorHit[]> {
     // Without an embedding service we cannot embed the query, so semantic
     // search is unavailable on this machine (index may still be loaded from
     // iCloud for inspection, but query embedding requires the service).
@@ -916,8 +957,6 @@ export class SemanticIndexer {
     // used (the startup path never touches them).
     const loaded = await this.ensureVectorsLoaded();
     if (!loaded) return [];
-    const k = topK ?? this.settings.topK ?? 20;
-    const min = minSimilarity ?? 0;
 
     let qVec = this.lastQueryCache?.q === query ? this.lastQueryCache.vec : null;
     if (!qVec) {
@@ -926,7 +965,7 @@ export class SemanticIndexer {
       if (!qVec) return [];
       this.lastQueryCache = { q: query, vec: qVec };
     }
-    return this.index.search(qVec, k, min);
+    return this.index.search(qVec, topK, minSimilarity);
   }
 
   destroy(): void {

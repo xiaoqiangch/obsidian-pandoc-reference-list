@@ -127,8 +127,44 @@ export class SemanticVectorIndex {
     // int8 dot product max ≈ 127*127 per the normalization; scale it so the
     // returned "similarity" approximates cosine similarity in [0,1].
     const scoreMax = 127 * 127;
+    const k = Math.max(1, Math.min(topK, this.chunkCount || 1));
 
-    const scored: { score: number; path: string; startLine: number; endLine: number }[] = [];
+    // Bounded top-K: keep at most `k` scored entries instead of allocating one
+    // object per chunk (570k+) and sorting them all. The winner set is
+    // identical to the old full-sort approach because any chunk that clears
+    // `minSimilarity` has a higher raw score than any chunk that does not, so
+    // the top-k raw scores always contain exactly the top-k filtered ones.
+    // This removes a ~50MB transient allocation and an O(n log n) sort from
+    // every keystroke — both of which contributed to renderer OOM crashes
+    // ("DevTools connection lost") during search.
+    interface Candidate {
+      score: number;
+      path: string;
+      startLine: number;
+      endLine: number;
+    }
+    const top: Candidate[] = [];
+    let worst = -Infinity;
+
+    const keep = (c: Candidate) => {
+      if (top.length < k) {
+        top.push(c);
+        worst = Math.min(worst, c.score);
+      } else if (c.score > worst) {
+        // Replace the current worst (linear scan is fine for k ≤ 60; the
+        // dominant cost here is the dot-product loop, not this bookkeeping).
+        let wi = 0;
+        for (let i = 1; i < top.length; i++) {
+          if (top[i].score < top[wi].score) wi = i;
+        }
+        top[wi] = c;
+        worst = top[0].score;
+        for (let i = 1; i < top.length; i++) {
+          if (top[i].score < worst) worst = top[i].score;
+        }
+      }
+    };
+
     for (const [path, d] of this.docs) {
       const v = d.vectors;
       const chunks = d.meta.chunks;
@@ -136,14 +172,13 @@ export class SemanticVectorIndex {
         const off = c * dim;
         let s = 0;
         for (let j = 0; j < dim; j++) s += q[j] * v[off + j];
-        scored.push({ score: s, path, startLine: chunks[c].startLine, endLine: chunks[c].endLine });
+        keep({ score: s, path, startLine: chunks[c].startLine, endLine: chunks[c].endLine });
       }
     }
 
-    scored.sort((a, b) => b.score - a.score);
-    return scored
+    top.sort((a, b) => b.score - a.score);
+    return top
       .filter((r) => r.score / scoreMax >= minSimilarity)
-      .slice(0, topK)
       .map((r) => {
         const meta = this.docs.get(r.path)!.meta;
         return {

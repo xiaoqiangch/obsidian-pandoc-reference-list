@@ -88,7 +88,7 @@ export class ReferenceListView extends ItemView {
     this.displayedCount = 50;
     this.syncHeaderToMode();
     this.renderAllReferencesList();
-  }, 300);
+  }, 400);
 
   constructor(leaf: WorkspaceLeaf, plugin: ReferenceList) {
     super(leaf);
