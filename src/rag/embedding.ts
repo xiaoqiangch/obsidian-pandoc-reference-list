@@ -10,8 +10,18 @@ export interface EmbeddingSettings {
 // 32 texts × ~800 chars is the sweet spot for local Ollama (bge-m3). For very
 // large chunks we shrink the batch so a single request stays within the model
 // context window and completes before the timeout.
+//
+// Token counts are not predictable from character counts (CJK is several
+// times denser per char than English), so a char-capped batch can still exceed
+// the server's hard token limit — Ollama's llama-server is started with a
+// physical batch size (observed -b 2048) and rejects any embedding request
+// whose total input exceeds it with HTTP 400 "input (N tokens) is too large
+// to process". Oversized batches are therefore re-embedded in halves
+// ({@link embedBatchRecursive}) so the drain never gets stuck on 400s.
 const MAX_BATCH_SIZE = 32;
 const MAX_BATCH_CHARS = 32000;
+/** Match Ollama / llama.cpp "input too large for physical batch" rejections. */
+const TOO_LARGE_RE = /too large|batch size/i;
 
 /**
  * Embed a list of texts via a text-embedding API (OpenAI-compatible
@@ -35,13 +45,37 @@ export async function embedTexts(
   const out: number[][] = [];
   for (let i = 0; i < clean.length; i += batchSizeFor(clean)) {
     const batch = clean.slice(i, i + batchSizeFor(clean));
-    const vecs = await embedBatch(batch, settings);
+    const vecs = await embedBatchRecursive(batch, settings);
     if (vecs.length !== batch.length) {
       throw new Error(`嵌入结果数量不匹配（期望 ${batch.length}，实际 ${vecs.length}）。`);
     }
     out.push(...vecs);
   }
   return out;
+}
+
+/**
+ * Embed a batch, shrinking it in halves when the server rejects it because the
+ * combined input exceeds the server's physical batch size (Ollama returns
+ * HTTP 400 "input is too large to process" — see {@link TOO_LARGE_RE}). A
+ * single text that still exceeds the limit is rethrown so the caller can treat
+ * the file as failed instead of looping forever.
+ */
+async function embedBatchRecursive(
+  batch: string[],
+  settings: EmbeddingSettings
+): Promise<number[][]> {
+  try {
+    return await embedBatch(batch, settings);
+  } catch (e: any) {
+    if (TOO_LARGE_RE.test(e?.message || '') && batch.length > 1) {
+      const mid = Math.ceil(batch.length / 2);
+      const left = await embedBatchRecursive(batch.slice(0, mid), settings);
+      const right = await embedBatchRecursive(batch.slice(mid), settings);
+      return [...left, ...right];
+    }
+    throw e;
+  }
 }
 
 /** Cap a batch so its total characters stay within a sane request size. */
